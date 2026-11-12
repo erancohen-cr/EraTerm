@@ -271,3 +271,26 @@ dialog select { width: 100%; }
 .srow td:first-child { padding-left: 28px; }
 .ulink { font-size: 11px; }
 #usersView .muted { margin: -6px 0 14px; }
+
+/* ---------- script tags / order ---------- */
+.sc-tools { display: flex; gap: 6px; }
+.sc-tools input { flex: 1; min-width: 0; }
+.sc-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.sc-tags:empty { display: none; }
+.tchip { font-size: 11px; padding: 2px 8px; border-radius: 12px; color: var(--muted); display: inline-flex; gap: 5px; align-items: center; }
+.tchip small { color: #4b525c; }
+.tchip.on { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+.tchip.on small { color: var(--accent); }
+.tchip.clear { border-style: dashed; }
+.sc-hint:empty { display: none; }
+.sc-tagrow { display: flex; flex-wrap: wrap; gap: 3px; }
+.sc-tagrow .tag { cursor: pointer; font-size: 10px; margin: 0; }
+.sc-tagrow .tag:hover, .sc-tagrow .tag.on { color: var(--accent); border-color: var(--accent); }
+.sc-list li[draggable="true"] { cursor: grab; }
+.sc-list li.dragging { opacity: .4; }
+.sc-list li.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.sc-list li.drop-after { box-shadow: 0 2px 0 var(--accent); }
+.grip { color: #4b525c; cursor: grab; letter-spacing: -2px; }
+.linkbtn { background: none; border: 0; color: var(--muted); font-size: 11px; padding: 2px; align-self: flex-start; }
+.linkbtn:hover { color: var(--accent); }
+#scriptDlg .sc-tags { margin: -4px 0 8px; }

@@ -580,26 +580,94 @@ async function openServer(s) {
   q('.tnew').onclick = () => newSession();
 
   // ---- scripts side panel ----
-  let scripts = [];
+  let scripts = [], dragId = null;
+  const activeTags = new Set(); // show scripts having ANY of these tags
+  let sortMode = 'manual';
+  try { sortMode = localStorage.getItem('scriptSort') || 'manual'; } catch { /* default */ }
+  q('.sc-sort').value = sortMode;
+  const lastRun = () => { try { return JSON.parse(localStorage.getItem('scriptLastRun')) || {}; } catch { return {}; } };
+
   async function loadScripts() {
     try { scripts = await api.scripts.list(); } catch (e) { toast(cleanErr(e), true); }
     renderScripts();
   }
-  function renderScripts() {
-    const f = q('.sc-filter').value.toLowerCase();
-    const list = scripts.filter(x => !f || `${x.name} ${x.description} ${x.command}`.toLowerCase().includes(f));
-    q('.sc-list').replaceChildren(...list.map(x => el('li', { title: x.command },
-      el('div', { className: 'sc-head' },
-        el('b', { textContent: x.name }),
-        x.builtin ? el('span', { className: 'tag', textContent: 'built-in' }) : null,
-        el('span', { className: 'grow' }),
-        x.builtin ? null : iconBtn('✎', 'Edit', () => editScript(x)),
-        x.builtin ? null : iconBtn('🗑', 'Delete', () => deleteScript(x), 'icon danger'),
-        iconBtn('▶ Run', 'Run in the active terminal session', () => runScript(x), 'primary sm')),
-      x.description ? el('small', { textContent: x.description }) : null,
-      el('code', { className: 'mono', textContent: x.command.split('\n')[0] + (x.command.includes('\n') ? ' …' : '') }))));
+  const toggleTag = t => { activeTags[activeTags.has(t) ? 'delete' : 'add'](t); renderScripts(); };
+
+  function renderTags() {
+    const counts = new Map();
+    for (const x of scripts) for (const t of x.tags || []) counts.set(t, (counts.get(t) || 0) + 1);
+    for (const t of activeTags) if (!counts.has(t)) activeTags.delete(t);
+    q('.sc-tags').replaceChildren(
+      ...[...counts.keys()].sort().map(t => el('button', {
+        className: 'tchip' + (activeTags.has(t) ? ' on' : ''), title: `Show scripts tagged "${t}"`, onclick: () => toggleTag(t),
+      }, t, el('small', { textContent: counts.get(t) }))),
+      ...(activeTags.size ? [el('button', { className: 'tchip clear', textContent: '✕ Clear', onclick: () => { activeTags.clear(); renderScripts(); } })] : []));
   }
+
+  function renderScripts() {
+    renderTags();
+    const f = q('.sc-filter').value.toLowerCase();
+    let list = scripts
+      .filter(x => !f || `${x.name} ${x.description} ${x.command} ${(x.tags || []).join(' ')}`.toLowerCase().includes(f))
+      .filter(x => !activeTags.size || (x.tags || []).some(t => activeTags.has(t)));
+    if (sortMode === 'name') list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    if (sortMode === 'recent') { const lr = lastRun(); list = [...list].sort((a, b) => (lr[b.id] || 0) - (lr[a.id] || 0)); }
+    const canDrag = sortMode === 'manual' && !f && !activeTags.size;
+    q('.sc-hint').textContent = sortMode !== 'manual' ? '' : canDrag ? 'Drag ⋮⋮ to change the order.' : 'Clear the search and tag filters to drag scripts into a new order.';
+    q('.sc-list').replaceChildren(...list.map(x => {
+      const li = el('li', { title: x.command, draggable: canDrag },
+        el('div', { className: 'sc-head' },
+          canDrag ? el('span', { className: 'grip', textContent: '⋮⋮', title: 'Drag to reorder' }) : null,
+          el('b', { textContent: x.name }),
+          el('span', { className: 'grow' }),
+          iconBtn('✎', 'Edit', () => editScript(x)),
+          iconBtn('🗑', 'Delete', () => deleteScript(x), 'icon danger'),
+          iconBtn('▶ Run', 'Run in the active terminal session', () => runScript(x), 'primary sm')),
+        x.description ? el('small', { textContent: x.description }) : null,
+        el('code', { className: 'mono', textContent: x.command.split('\n')[0] + (x.command.includes('\n') ? ' …' : '') }),
+        x.tags?.length ? el('div', { className: 'sc-tagrow' }, ...x.tags.map(t => el('span', {
+          className: 'tag' + (activeTags.has(t) ? ' on' : ''), textContent: t, title: `Filter by "${t}"`,
+          onclick: e => { e.stopPropagation(); toggleTag(t); },
+        }))) : null);
+      if (canDrag) {
+        li.ondragstart = e => { dragId = x.id; li.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; };
+        li.ondragend = () => { dragId = null; li.classList.remove('dragging'); };
+        li.ondragover = e => {
+          if (!dragId) return;
+          e.preventDefault();
+          const r = li.getBoundingClientRect();
+          const after = e.clientY > r.top + r.height / 2;
+          li.classList.toggle('drop-after', after);
+          li.classList.toggle('drop-before', !after);
+        };
+        li.ondragleave = () => li.classList.remove('drop-after', 'drop-before');
+        li.ondrop = async e => {
+          e.preventDefault();
+          const after = li.classList.contains('drop-after');
+          li.classList.remove('drop-after', 'drop-before');
+          if (!dragId || dragId === x.id) return;
+          const ids = scripts.map(y => y.id).filter(id => id !== dragId);
+          ids.splice(ids.indexOf(x.id) + (after ? 1 : 0), 0, dragId);
+          scripts = ids.map(id => scripts.find(y => y.id === id));
+          renderScripts();
+          try { await api.scripts.reorder(ids); } catch (err) { toast(cleanErr(err), true); loadScripts(); }
+        };
+      }
+      return li;
+    }));
+  }
+  q('.sc-sort').onchange = () => {
+    sortMode = q('.sc-sort').value;
+    try { localStorage.setItem('scriptSort', sortMode); } catch { /* ignore */ }
+    renderScripts();
+  };
+  q('.sc-restore').onclick = async () => {
+    const n = await api.scripts.restoreBuiltins();
+    toast(n ? `Restored ${n} built-in script${n === 1 ? '' : 's'}` : 'All built-in scripts are already in your list.');
+    loadScripts();
+  };
   function runScript(x) {
+    try { localStorage.setItem('scriptLastRun', JSON.stringify({ ...lastRun(), [x.id]: Date.now() })); } catch { /* ignore */ }
     const body = x.command.replace(/\r\n/g, '\n').trimEnd();
     if (!body.includes('\n')) return runInTerminal(body + '\r');
     // multi-line: feed through a heredoc so blocks/functions run as one script
@@ -610,6 +678,16 @@ async function openServer(s) {
     const f = $('#scriptForm');
     f.reset();
     for (const k of ['id', 'name', 'description', 'command']) f.elements[k].value = x[k] || '';
+    f.elements.tags.value = (x.tags || []).join(', ');
+    // existing tags as one-click chips
+    const all = [...new Set(scripts.flatMap(y => y.tags || []))].sort();
+    $('#scriptTagPick').replaceChildren(...all.map(t => el('button', {
+      type: 'button', className: 'tchip', textContent: t,
+      onclick: () => {
+        const cur = f.elements.tags.value.split(',').map(y => y.trim()).filter(Boolean);
+        if (!cur.includes(t)) f.elements.tags.value = [...cur, t].join(', ');
+      },
+    })));
     const dlg = $('#scriptDlg');
     dlg.returnValue = '';
     dlg.showModal();
@@ -617,7 +695,7 @@ async function openServer(s) {
       if (dlg.returnValue !== 'save') return;
       const e = f.elements;
       try {
-        await api.scripts.save({ id: e.id.value || undefined, name: e.name.value, description: e.description.value, command: e.command.value });
+        await api.scripts.save({ id: e.id.value || undefined, name: e.name.value, description: e.description.value, command: e.command.value, tags: e.tags.value });
         loadScripts();
       } catch (err) { toast(cleanErr(err), true); }
     }, { once: true });

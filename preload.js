@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld('api', {
     list: () => ipcRenderer.invoke('scripts:list'),
     save: sc => ipcRenderer.invoke('scripts:save', sc),
     delete: id => ipcRenderer.invoke('scripts:delete', id),
+    reorder: ids => ipcRenderer.invoke('scripts:reorder', ids),
+    restoreBuiltins: () => ipcRenderer.invoke('scripts:restoreBuiltins'),
     import: () => ipcRenderer.invoke('scripts:import'),
     export: () => ipcRenderer.invoke('scripts:export'),
   },

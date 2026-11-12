@@ -227,31 +227,43 @@ ipcMain.handle('rdp:open', async (_e, serverId) => {
   return { copied: true };
 });
 
-// ---------- scripts (built-in + user, run through the terminal) ----------
+// ---------- scripts (run through the terminal) ----------
+// Built-ins are copied into scripts.json once, so they can be edited, re-tagged, reordered or deleted
+// like any other script. "Restore built-ins" re-adds the ones (by name) that were deleted.
 const BUILTIN_SCRIPTS = [
-  ['System overview', 'Kernel, uptime, load, disk and memory', 'uname -a; uptime; df -h; (free -h 2>/dev/null || vm_stat)'],
-  ['Top CPU processes', '15 processes using the most CPU', 'ps aux | sort -nrk 3 | head -15'],
-  ['Top memory processes', '15 processes using the most memory', 'ps aux | sort -nrk 4 | head -15'],
-  ['Disk usage', 'Mounted filesystems, human readable', 'df -h'],
-  ['Largest items here', 'Biggest files/folders in the current directory', 'du -sh ./* ./.[!.]* 2>/dev/null | sort -rh | head -20'],
-  ['Large files (>100MB)', 'Files over 100MB under the current directory', 'find . -xdev -type f -size +100M -exec ls -lh {} + 2>/dev/null | sort -k5 -rh | head -20'],
-  ['Listening ports', 'Open TCP/UDP listeners', '(ss -tulpn 2>/dev/null || netstat -an | grep -i listen)'],
-  ['Network interfaces', 'Addresses per interface', '(ip -br addr 2>/dev/null || ifconfig)'],
-  ['Logged-in users', 'Who is on and what they run', 'w'],
-  ['Failed services', 'systemd units in failed state (Linux)', 'systemctl --failed --no-pager'],
-  ['Recent errors', 'Last 50 error-level journal entries (Linux)', 'journalctl -p err -n 50 --no-pager'],
-  ['Docker containers', 'All containers with status', 'docker ps -a'],
-].map(([name, description, command], i) => ({ id: `builtin-${i}`, name, description, command, builtin: true }));
+  ['System overview', 'Kernel, uptime, load, disk and memory', 'uname -a; uptime; df -h; (free -h 2>/dev/null || vm_stat)', ['system']],
+  ['Top CPU processes', '15 processes using the most CPU', 'ps aux | sort -nrk 3 | head -15', ['processes', 'performance']],
+  ['Top memory processes', '15 processes using the most memory', 'ps aux | sort -nrk 4 | head -15', ['processes', 'performance']],
+  ['Disk usage', 'Mounted filesystems, human readable', 'df -h', ['disk']],
+  ['Largest items here', 'Biggest files/folders in the current directory', 'du -sh ./* ./.[!.]* 2>/dev/null | sort -rh | head -20', ['disk']],
+  ['Large files (>100MB)', 'Files over 100MB under the current directory', 'find . -xdev -type f -size +100M -exec ls -lh {} + 2>/dev/null | sort -k5 -rh | head -20', ['disk']],
+  ['Listening ports', 'Open TCP/UDP listeners', '(ss -tulpn 2>/dev/null || netstat -an | grep -i listen)', ['network']],
+  ['Network interfaces', 'Addresses per interface', '(ip -br addr 2>/dev/null || ifconfig)', ['network']],
+  ['Logged-in users', 'Who is on and what they run', 'w', ['system', 'security']],
+  ['Failed services', 'systemd units in failed state (Linux)', 'systemctl --failed --no-pager', ['services', 'linux']],
+  ['Recent errors', 'Last 50 error-level journal entries (Linux)', 'journalctl -p err -n 50 --no-pager', ['logs', 'linux']],
+  ['Docker containers', 'All containers with status', 'docker ps -a', ['docker']],
+].map(([name, description, command, tags]) => ({ name, description, command, tags: [...tags, 'built-in'] }));
 
-const userScripts = () => readJson('scripts.json', []);
+const cleanTags = t => [...new Set((Array.isArray(t) ? t : String(t || '').split(','))
+  .map(x => String(x).trim().toLowerCase()).filter(Boolean))].slice(0, 20);
 const cleanScript = sc => ({
-  id: sc.id && !String(sc.id).startsWith('builtin-') ? String(sc.id) : crypto.randomUUID(),
+  id: sc.id ? String(sc.id) : crypto.randomUUID(),
   name: String(sc.name || 'Untitled').slice(0, 200),
   description: String(sc.description || '').slice(0, 500),
   command: String(sc.command || ''),
+  tags: cleanTags(sc.tags),
 });
+const userScripts = () => {
+  const st = readJson('settings.json', {});
+  if (st.scriptsSeeded) return readJson('scripts.json', []);
+  const list = [...BUILTIN_SCRIPTS.map(cleanScript), ...readJson('scripts.json', []).map(cleanScript)];
+  writeJson('scripts.json', list);
+  writeJson('settings.json', { ...st, scriptsSeeded: true });
+  return list;
+};
 
-ipcMain.handle('scripts:list', () => [...BUILTIN_SCRIPTS, ...userScripts()]);
+ipcMain.handle('scripts:list', () => userScripts());
 ipcMain.handle('scripts:save', (_e, sc) => {
   if (!String(sc.command || '').trim()) throw new Error('Script is empty');
   const rec = cleanScript(sc);
@@ -260,6 +272,20 @@ ipcMain.handle('scripts:save', (_e, sc) => {
   return rec;
 });
 ipcMain.handle('scripts:delete', (_e, id) => writeJson('scripts.json', userScripts().filter(x => x.id !== id)));
+// New manual order: ids listed first in the given order; anything not listed keeps its place after them.
+ipcMain.handle('scripts:reorder', (_e, ids) => {
+  const list = userScripts();
+  const byId = new Map(list.map(x => [x.id, x]));
+  const ordered = ids.map(id => byId.get(id)).filter(Boolean);
+  writeJson('scripts.json', [...ordered, ...list.filter(x => !ids.includes(x.id))]);
+});
+ipcMain.handle('scripts:restoreBuiltins', () => {
+  const list = userScripts();
+  const have = new Set(list.map(x => x.name));
+  const missing = BUILTIN_SCRIPTS.filter(b => !have.has(b.name)).map(cleanScript);
+  writeJson('scripts.json', [...list, ...missing]);
+  return missing.length;
+});
 
 // Import: an exported .json, or .sh/.txt files (one script each, named after the file).
 ipcMain.handle('scripts:import', async () => {
@@ -286,7 +312,7 @@ ipcMain.handle('scripts:import', async () => {
 
 ipcMain.handle('scripts:export', async () => {
   const list = userScripts();
-  if (!list.length) throw new Error('No custom scripts to export yet. Add one with +.');
+  if (!list.length) throw new Error('No scripts to export.');
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
     defaultPath: path.join(app.getPath('downloads'), 'eraterm-scripts.json'),
   });

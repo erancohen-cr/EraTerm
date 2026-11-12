@@ -148,13 +148,23 @@
             <header>
               <b>Scripts</b><span class="grow"></span>
               <button class="sc-up icon" title="Import scripts (.json, .sh, .txt)">⤒</button>
-              <button class="sc-down icon" title="Export your scripts (.json)">⤓</button>
+              <button class="sc-down icon" title="Export scripts (.json)">⤓</button>
               <button class="sc-refresh icon" title="Refresh">⟳</button>
               <button class="sc-add icon" title="New script">＋</button>
               <button class="sc-close icon" title="Close">×</button>
             </header>
-            <input class="sc-filter search" placeholder="Search scripts…">
+            <div class="sc-tools">
+              <input class="sc-filter search" placeholder="Search scripts…">
+              <select class="sc-sort" title="Order">
+                <option value="manual">My order</option>
+                <option value="name">Name A–Z</option>
+                <option value="recent">Recently run</option>
+              </select>
+            </div>
+            <div class="sc-tags"></div>
+            <small class="sc-hint muted"></small>
             <ul class="sc-list"></ul>
+            <button class="sc-restore linkbtn" title="Re-add built-in scripts you deleted">↺ Restore built-in scripts</button>
           </aside>
         </div>
 
@@ -227,6 +237,8 @@
       <input type="hidden" name="id">
       <label>Name <input name="name" required></label>
       <label>Description <input name="description"></label>
+      <label>Tags <input name="tags" placeholder="comma separated, e.g. disk, linux"></label>
+      <div id="scriptTagPick" class="sc-tags"></div>
       <label>Command or script <textarea name="command" class="mono" rows="9" required spellcheck="false" placeholder="df -h&#10;# multi-line scripts run with sh (or the #! interpreter)"></textarea></label>
       <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
     </form>
