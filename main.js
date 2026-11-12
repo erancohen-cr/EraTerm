@@ -31,7 +31,7 @@ const tails = new Map();  // tailId -> stream
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1400, height: 880, title: 'EraTerm', backgroundColor: '#0b0d10',
+    width: 1400, height: 880, title: 'EranTerm', backgroundColor: '#0b0d10',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   win.loadFile('index.html');
