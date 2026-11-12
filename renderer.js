@@ -792,6 +792,7 @@ async function openServer(s) {
         el('td', { className: 'r actions' },
           iconBtn('◧', 'Open in side terminal', () => openSide(cwd)),
           iconBtn('›_', 'Open in terminal', () => openInTerminal(cwd)),
+          iconBtn('⧉', 'Copy path', () => navigator.clipboard.writeText(e.path).then(() => toast(`Copied ${e.path}`), err => toast(cleanErr(err), true))),
           iconBtn('⤓', isDir ? 'Download as .tar.gz' : 'Download', () => download(e)),
           iconBtn('🗑', 'Delete', () => remove(e), 'icon danger')));
       tr.ondblclick = () => (isDir ? loadDir(e.path) : download(e));
@@ -957,6 +958,7 @@ async function openServer(s) {
   };
   q('.llines').onchange = reloadLog;
   q('.lrefresh').onclick = reloadLog;
+  q('.lclear').onclick = () => { lbody.replaceChildren(); updateLogStat(); }; // screen only, tail keeps running
   q('.ldl').onclick = () => lg.cur && download({ name: basename(lg.cur), path: lg.cur, type: 'file' });
   renderSources();
 
