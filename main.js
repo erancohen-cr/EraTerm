@@ -100,6 +100,7 @@ ipcMain.handle('servers:save', (_e, s) => {
     group: String(s.group || '').trim().slice(0, 100),
     userId: s.userId && users().some(u => u.id === s.userId) ? s.userId : '',
     passwordEnc: s.password ? enc(s.password) : prev?.passwordEnc || '',
+    os: prev?.host === String(s.host) ? prev.os || '' : '', // new host: detect again
   };
   writeJson('servers.json', prev ? list.map(x => (x.id === rec.id ? rec : x)) : [...list, rec]);
   return publicServer(rec);
@@ -140,6 +141,15 @@ const exec = (conn, cmd, check = false) => new Promise((resolve, reject) => {
   });
 });
 
+// The server's OS picks its desktop protocol: RDP for Windows, Screen Sharing (VNC) for the rest.
+async function detectOs(conn) {
+  const u = (await exec(conn, 'uname -s').catch(() => '')).trim();
+  if (/mingw|cygwin|msys|windows/i.test(u)) return 'windows';
+  if (/darwin/i.test(u)) return 'macos';
+  if (u) return /linux/i.test(u) ? 'linux' : 'unix';
+  return /windows/i.test(await exec(conn, 'cmd /c ver').catch(() => '')) ? 'windows' : '';
+}
+
 // Opens a registered connection (used by server pages and deployments).
 const openConn = serverId => new Promise((resolve, reject) => {
   const s = withCreds(servers().find(x => x.id === serverId));
@@ -172,6 +182,7 @@ const openConn = serverId => new Promise((resolve, reject) => {
     conns.set(connId, c);
     exec(conn, 'uname -a').then(u => (c.uname = u.trim())).catch(() => {});
     patchServer(serverId, { lastSeen: Date.now() });
+    detectOs(conn).then(os => os && os !== s.os && patchServer(serverId, { os })).catch(() => {});
     resolve(connId);
   });
   conn.on('error', err => {
@@ -205,9 +216,17 @@ ipcMain.on('ssh:closeShell', (_e, id) => shells.get(id)?.close());
 ipcMain.handle('ssh:metrics', async (_e, connId) => parseMetrics(await exec(getConn(connId).conn, METRICS_CMD)));
 
 // ---------- RDP (hands off to the OS RDP client: Windows App on macOS, mstsc on Windows) ----------
-ipcMain.handle('rdp:open', async (_e, serverId) => {
-  const s = withCreds(servers().find(x => x.id === serverId));
-  if (!s) throw new Error('Server not found');
+// macOS clients can't take a password from the .rdp file or the vnc:// URL safely: put it on the
+// clipboard for the login prompt, then wipe it.
+function copyPassword(s) {
+  if (!s.passwordEnc) return { copied: false };
+  const pw = dec(s.passwordEnc);
+  clipboard.writeText(pw);
+  setTimeout(() => { if (clipboard.readText() === pw) clipboard.clear(); }, 45000);
+  return { copied: true };
+}
+
+async function launchRdp(s) {
   const dir = dataFile('rdp');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, `${s.name.replace(/[^\w.-]+/g, '_')}-${s.id.slice(0, 8)}.rdp`);
@@ -218,13 +237,33 @@ ipcMain.handle('rdp:open', async (_e, serverId) => {
       ? 'No RDP app found. Install "Windows App" from the Mac App Store, then try again.'
       : `Could not open the RDP file: ${err}`);
   }
+  patchServer(s.id, { lastSeen: Date.now() });
+  return copyPassword(s);
+}
+
+ipcMain.handle('rdp:open', async (_e, serverId) => {
+  const s = withCreds(servers().find(x => x.id === serverId));
+  if (!s) throw new Error('Server not found');
+  return launchRdp(s);
+});
+
+// Remote desktop for an SSH server, by its OS (detected over SSH the first time).
+// ponytail: fixed ports (RDP 3389, VNC 5900); add per-server desktop ports if someone needs them.
+ipcMain.handle('remote:open', async (_e, serverId) => {
+  const s = withCreds(servers().find(x => x.id === serverId));
+  if (!s) throw new Error('Server not found');
+  let os = s.os;
+  if (!os) {
+    const id = await openConn(serverId);
+    try { os = await detectOs(conns.get(id).conn); } finally { conns.get(id)?.conn.end(); }
+    if (!os) throw new Error(`Could not detect the OS of ${s.name}.`);
+    patchServer(serverId, { os });
+  }
+  if (os === 'windows') return { os, ...(await launchRdp({ ...s, port: 3389, domain: '' })) };
+  const host = s.host.includes(':') ? `[${s.host}]` : s.host;
+  await shell.openExternal(`vnc://${s.username ? encodeURIComponent(s.username) + '@' : ''}${host}`);
   patchServer(serverId, { lastSeen: Date.now() });
-  // .rdp can't carry a password on macOS: put it on the clipboard for the login prompt, then wipe it.
-  if (!s.passwordEnc) return { copied: false };
-  const pw = dec(s.passwordEnc);
-  clipboard.writeText(pw);
-  setTimeout(() => { if (clipboard.readText() === pw) clipboard.clear(); }, 45000);
-  return { copied: true };
+  return { os, ...copyPassword(s) };
 });
 
 // ---------- scripts (run through the terminal) ----------

@@ -64,5 +64,6 @@ contextBridge.exposeInMainWorld('api', {
     onEvent: on('deploy:event'),
   },
   rdp: { open: serverId => ipcRenderer.invoke('rdp:open', serverId) },
+  remote: { open: serverId => ipcRenderer.invoke('remote:open', serverId) },
   ai: { suggest: (connId, req) => ipcRenderer.invoke('ai:suggest', connId, req) },
 });

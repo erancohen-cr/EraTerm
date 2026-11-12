@@ -21,6 +21,7 @@
         <button class="navitem active" id="navAll" title="All Servers"><i>▤</i><span class="lbl">All Servers</span><span class="count lbl" id="navCount"></span></button>
         <button class="navitem" id="navFav" title="Favorites"><i>☆</i><span class="lbl">Favorites</span><span class="count lbl" id="favCount"></span></button>
         <button class="navitem" id="navUsers" title="Users"><i>👤</i><span class="lbl">Users</span><span class="count lbl" id="userCount"></span></button>
+        <button class="navitem" id="navDeploy" title="Deployments"><i>🚀</i><span class="lbl">Deployments</span></button>
         <h6 class="lbl">Groups</h6>
         <div id="navGroups" class="navgroups"></div>
         <span class="grow"></span>
@@ -40,6 +41,18 @@
             <tbody id="serverRows"></tbody>
           </table>
           <p id="emptyHome" class="empty">No servers yet. Click “New connection” to add one.</p>
+        </div>
+        <div id="deployView" hidden>
+          <!-- Deployments -->
+        <div class="panel deploy">
+          <aside class="dlist">
+            <h6>Deployments · <span class="dcount">0</span></h6>
+            <button class="dnew primary">＋ New deployment</button>
+            <ul class="dl"></ul>
+          </aside>
+          <div class="deditor"></div>
+        </div>
+
         </div>
         <div id="usersView" hidden>
           <header class="pagehead">
@@ -72,7 +85,6 @@
         <aside class="side">
           <button class="fold" title="Collapse / expand menu">‹</button>
           <button class="navitem" data-panel="files" title="File Manager"><i>▭</i><span class="lbl">File Manager</span></button>
-          <button class="navitem" data-panel="deploy" title="Deployments"><i>🚀</i><span class="lbl">Deployments</span></button>
           <button class="navitem" data-panel="term" title="Terminal"><i>›_</i><span class="lbl">Terminal</span></button>
           <button class="navitem" data-panel="logs" title="Logs"><i>≡</i><span class="lbl">Logs</span></button>
         </aside>
@@ -107,16 +119,6 @@
             <header><span class="sidetitle mono"></span><button class="sideclose icon" title="Close">×</button></header>
             <div class="xhost"></div>
           </div>
-        </div>
-
-        <!-- Deployments -->
-        <div class="panel deploy" hidden>
-          <aside class="dlist">
-            <h6>Deployments · <span class="dcount">0</span></h6>
-            <button class="dnew primary">＋ New deployment</button>
-            <ul class="dl"></ul>
-          </aside>
-          <div class="deditor"></div>
         </div>
 
         <!-- Terminal -->

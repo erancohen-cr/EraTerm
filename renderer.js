@@ -54,6 +54,7 @@ document.addEventListener('drop', e => e.preventDefault());
 
 // ================= top tabs =================
 const views = new Map(); // serverId -> server view
+let deploys; // home Deployments panel, built on first visit
 
 function show(id) {
   $('#home').hidden = id !== 'home';
@@ -106,12 +107,16 @@ function renderNav() {
   $('#navAll').classList.toggle('active', homeMode === 'all');
   $('#navFav').classList.toggle('active', homeMode === 'fav');
   $('#navUsers').classList.toggle('active', homeMode === 'users');
+  $('#navDeploy').classList.toggle('active', homeMode === 'deploy');
   $('#navGroups').replaceChildren(...groupNames().map(name => el('button', {
     className: 'navitem' + (g === name ? ' active' : ''), title: name, onclick: () => setMode('group:' + name),
   }, el('i', { textContent: name === UNGROUPED ? '◌' : '▣' }), el('span', { className: 'lbl', textContent: name }),
   el('span', { className: 'count lbl', textContent: servers.filter(s => groupOf(s) === name).length }))));
-  $('#serversView').hidden = homeMode === 'users';
+  $('#serversView').hidden = homeMode === 'users' || homeMode === 'deploy';
   $('#usersView').hidden = homeMode !== 'users';
+  $('#deployView').hidden = homeMode !== 'deploy';
+  $('#home .content').classList.toggle('flush', homeMode === 'deploy');
+  if (homeMode === 'deploy') deploys ||= initDeployments($('#deployView .panel'));
   // suggestions for the server form
   $('#groupList').replaceChildren(...groupNames().filter(x => x !== UNGROUPED).map(value => el('option', { value })));
   $('#usernameList').replaceChildren(...users.map(u => el('option', { value: u.username, label: u.label })));
@@ -130,6 +135,7 @@ function serverRow(s) {
       iconBtn(s.starred ? '★' : '☆', s.starred ? 'Unfavorite' : 'Favorite', () => toggleStar(s), 'icon' + (s.starred ? ' star' : '')),
       iconBtn('✎', 'Edit', () => editServer(s)),
       iconBtn('🗑', 'Delete', () => deleteServer(s), 'icon danger'),
+      typeOf(s) === 'ssh' ? iconBtn(...(DESKTOP[s.os] || DESKTOP['']), () => openDesktop(s), 'desk') : el('span', { className: 'desk ph' }), // ph keeps columns aligned
       iconBtn(views.has(s.id) ? '↗ Open' : '▶ Connect', 'Connect', () => connectServer(s), 'primary')));
   tr.ondblclick = () => connectServer(s);
   return tr;
@@ -178,6 +184,24 @@ async function openRdp(s) {
   try {
     const r = await api.rdp.open(s.id);
     toast(`Opening ${s.name} in Windows App…` + (r.copied ? ' Password copied to clipboard (cleared in 45 s).' : ''));
+    refreshServers();
+  } catch (e) { toast(cleanErr(e), true); }
+}
+
+// Desktop button for SSH servers, by the server's OS (unknown until the first connection).
+const DESKTOP = {
+  windows: ['🖥 RDP', 'Open with Remote Desktop (Windows App, port 3389)'],
+  macos: ['🖥 Screen Sharing', 'Open with macOS Screen Sharing (Remote Management must be on)'],
+  linux: ['🖥 VNC', 'Open the desktop with Screen Sharing (needs a VNC server on port 5900)'],
+  unix: ['🖥 VNC', 'Open the desktop with Screen Sharing (needs a VNC server on port 5900)'],
+  '': ['🖥 Desktop', 'Open the remote desktop: RDP for Windows, Screen Sharing for macOS/Linux (detects the OS over SSH)'],
+};
+async function openDesktop(s) {
+  if (!s.os) toast(`Detecting the OS of ${s.name}…`);
+  try {
+    const r = await api.remote.open(s.id);
+    toast(`Opening ${s.name} in ${r.os === 'windows' ? 'Windows App' : 'Screen Sharing'}…` +
+      (r.copied ? ' Password copied to clipboard (cleared in 45 s).' : ''));
     refreshServers();
   } catch (e) { toast(cleanErr(e), true); }
 }
@@ -250,6 +274,7 @@ $('#filter').oninput = renderServers;
 $('#navAll').onclick = () => setMode('all');
 $('#navFav').onclick = () => setMode('fav');
 $('#navUsers').onclick = () => setMode('users');
+$('#navDeploy').onclick = () => setMode('deploy');
 
 // ---- users (saved credentials) ----
 function renderUsers() {
@@ -498,7 +523,6 @@ async function openServer(s) {
     v.panel = name;
     root.querySelectorAll('.panel').forEach(p => (p.hidden = !p.classList.contains(name)));
     root.querySelectorAll('.srvbody > .side .navitem').forEach(b => b.classList.toggle('active', b.dataset.panel === name));
-    if (name === 'deploy') v.deploy ||= initDeployments(q('.panel.deploy'), s); // own connections; works while disconnected
     if (!v.connId) return;
     if (name === 'term') {
       if (!sessions.length && !v.termOpened) newSession();

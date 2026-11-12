@@ -19,47 +19,76 @@ const newCheck = (type, onFail = 'stop') => ({
   ...(type === 'log' ? { file: '', pattern: '', expect: 'present', lines: 200 }
     : type === 'port' ? { host: '', port: '' } : { command: '', expectCode: 0 }),
 });
-const blankDeployment = serverId => ({
-  id: null, name: 'New deployment', targets: [serverId], parallel: false, files: [],
+const blankDeployment = () => ({
+  id: null, name: 'New deployment', targets: [], parallel: false, files: [],
   stages: { pre: { commands: [], checks: [] }, deploy: { commands: [], checks: [] }, post: { commands: [], checks: [] } },
 });
 
-function initDeployments(panel, server) {
-  let list = [], cur = null, dirty = false, lib = [], run = null;
+// Stages that will actually run for a definition (mirrors deploy.js: empty stages are skipped).
+const dStagesOf = d => D_STAGES.filter(([k]) => k === 'files' ? d.files?.length
+  : (d.stages?.[k]?.commands || []).some(c => String(c).trim()) || (d.stages?.[k]?.checks || []).some(c =>
+    (c.type === 'port' && Number(c.port) > 0) || (c.type === 'log' && c.file && c.pattern) || (c.type === 'exit' && String(c.command || '').trim())));
+const D_ICON = { ok: '✓', warn: '!', failed: '✕', skipped: '–' };
+const D_FINAL = ['success', 'warning', 'failed', 'cancelled', 'skipped'];
+
+function initDeployments(panel) {
+  let list = [], cur = null, dirty = false, lib = [];
+  let shown = null; // run whose status view is on screen
+  const runs = new Map(); // deploymentId -> last run (kept so its status can be reopened)
   const listEl = panel.querySelector('.dl');
   const ed = panel.querySelector('.deditor');
-  const runsBox = el('section', { className: 'druns', hidden: true }); // survives editor re-renders
 
   // ---------- list ----------
   async function load(selectId) {
     try { [list, lib] = await Promise.all([api.deploy.list(), api.scripts.list()]); } catch (e) { toast(cleanErr(e), true); }
     const pick = list.find(d => d.id === selectId);
     if (pick) select(pick, true);
-    else if (!cur) renderEmpty();
+    else if (!cur && !shown) renderEmpty();
     renderList();
   }
   function renderList() {
     panel.querySelector('.dcount').textContent = list.length;
-    listEl.replaceChildren(...list.map(d => el('li', {
-      className: d.id === cur?.id ? 'active' : '',
-      onclick: () => select(d),
-    }, el('b', { textContent: d.name }),
-    el('small', { textContent: `${d.targets.length} server${d.targets.length === 1 ? '' : 's'} · ${d.files.length} file${d.files.length === 1 ? '' : 's'}` }))));
+    listEl.replaceChildren(...list.map(d => {
+      const r = runs.get(d.id);
+      const act = (text, title, fn, cls = '') => el('button', { className: 'dact ' + cls, textContent: text, title,
+        onclick: e => { e.stopPropagation(); fn(); } });
+      return el('li', {
+        className: (d.id === (shown ? shown.dep.id : cur?.id) ? 'active' : '') + (r?.running ? ' running' : ''),
+        onclick: () => (r?.running ? showStatus(r) : select(d)),
+      }, el('b', { textContent: d.name }),
+      el('small', { textContent: `${d.targets.length} server${d.targets.length === 1 ? '' : 's'} · ${d.files.length} file${d.files.length === 1 ? '' : 's'}` }),
+      el('div', { className: 'dacts' },
+        act('✎ Edit', 'Edit configuration', () => select(d)),
+        r?.running ? act('■ Stop', 'Stop this run', () => api.deploy.cancel(r.id), 'stop')
+          : act('▶ Run', 'Run deployment', () => runFromList(d), 'run'),
+        r ? act('◉', 'Status of the last run', () => showStatus(r)) : null,
+        el('span', { className: 'grow' }),
+        act('🗑', 'Delete deployment', () => remove(d), 'del')));
+    }));
+  }
+  // Leaving the editor: ask before throwing away edits.
+  function leave() {
+    if (dirty && !confirm('Discard unsaved changes?')) return false;
+    dirty = false;
+    return true;
   }
   function select(d, force = false) {
-    if (!force && dirty && !confirm('Discard unsaved changes?')) return;
+    if (!force && !leave()) return;
     cur = structuredClone(d);
     dirty = false;
+    shown = null;
     renderEditor();
     renderList();
   }
   function renderEmpty() {
+    cur = null; shown = null;
+    ed.className = 'deditor';
     ed.replaceChildren(el('div', { className: 'empty' },
       el('p', { textContent: 'Push files to one or more servers and run commands around them, with checks between stages.' }),
-      el('button', { className: 'primary', textContent: '＋ New deployment', onclick: () => select(blankDeployment(server.id)) })),
-    runsBox);
+      el('button', { className: 'primary', textContent: '＋ New deployment', onclick: () => select(blankDeployment()) })));
+    renderList();
   }
-  panel.querySelector('.dnew').onclick = () => select(blankDeployment(server.id));
+  panel.querySelector('.dnew').onclick = () => select(blankDeployment());
 
   // ---------- editor helpers ----------
   const touch = () => { dirty = true; ed.querySelector('.dsave')?.classList.add('dirty'); };
@@ -81,15 +110,15 @@ function initDeployments(panel, server) {
   // ---------- editor ----------
   function renderEditor() {
     const d = cur;
-    const running = run?.running;
+    const r = d.id && runs.get(d.id);
+    ed.className = 'deditor';
     const head = el('div', { className: 'dhead' },
       inp(d, 'name', { className: 'dname', placeholder: 'Deployment name' }),
       el('span', { className: 'grow' }),
       el('button', { className: 'dsave' + (dirty ? ' dirty' : ''), textContent: 'Save', onclick: save }),
-      d.id ? el('button', { textContent: 'Delete', onclick: remove }) : null,
-      running
-        ? el('button', { className: 'danger-btn', textContent: '■ Stop', onclick: () => api.deploy.cancel(run.id) })
-        : el('button', { className: 'primary', textContent: '🚀 Run deployment', onclick: start }));
+      d.id ? el('button', { textContent: 'Delete', onclick: () => remove(d) }) : null,
+      r ? el('button', { textContent: r.running ? '◉ Running…' : '◉ Last run', onclick: () => showStatus(r) }) : null,
+      r?.running ? null : el('button', { className: 'primary', textContent: '🚀 Run deployment', onclick: start }));
 
     const ssh = servers.filter(x => x.type !== 'rdp');
     const targets = el('section', { className: 'dcard' },
@@ -113,8 +142,7 @@ function initDeployments(panel, server) {
     ed.replaceChildren(head, targets, ...D_STAGES.map(([key, title, text], i) =>
       el('section', { className: 'dcard' },
         el('header', {}, el('span', { className: 'dnum', textContent: i + 1 }), el('b', { textContent: title }), hint(`${text} Optional.`)),
-        key === 'files' ? filesBody(d) : stageBody(d.stages[key]))),
-    runsBox);
+        key === 'files' ? filesBody(d) : stageBody(d.stages[key]))));
   }
 
   function filesBody(d) {
@@ -209,56 +237,153 @@ function initDeployments(panel, server) {
       return true;
     } catch (e) { toast(cleanErr(e), true); return false; }
   }
-  async function remove() {
-    if (!confirm(`Delete deployment "${cur.name}"?`)) return;
-    await api.deploy.delete(cur.id);
-    cur = null; dirty = false;
+  async function remove(d) {
+    if (!confirm(`Delete deployment "${d.name}"?`)) return;
+    if (d.id) await api.deploy.delete(d.id);
+    runs.delete(d.id);
+    if (cur?.id === d.id || shown?.dep.id === d.id) { dirty = false; renderEmpty(); }
     load();
   }
 
   // ---------- run ----------
-  async function start() {
+  async function start() { // from the editor: save first so the run matches what is on screen
     if (!cur.targets.length) return toast('Pick at least one target server.', true);
-    if (!(await save())) return;
+    if (await save()) runDeployment(cur);
+  }
+  async function runFromList(d) {
+    if (dirty && cur?.id === d.id) { if (!(await save())) return; d = cur; } else if (!leave()) return;
+    if (!d.targets.length) { select(d, true); return toast('Pick at least one target server.', true); }
+    runDeployment(d);
+  }
+  async function runDeployment(d) {
     let r;
-    try { r = await api.deploy.run(cur); } catch (e) { return toast(cleanErr(e), true); }
-    run = { id: r.runId, name: cur.name, running: true, started: new Date(), targets: new Map() };
-    deployRunHandlers.set(r.runId, onEvent);
-    buildRunView(r.targets);
-    renderEditor();
+    try { r = await api.deploy.run(d); } catch (e) { return toast(cleanErr(e), true); }
+    const run = { id: r.runId, dep: structuredClone(d), running: true, started: Date.now(), targets: new Map() };
+    runs.set(d.id, run);
+    buildStatus(run, r.targets);
+    deployRunHandlers.set(r.runId, ev => onEvent(run, ev));
+    tick();
+    showStatus(run);
+  }
+  function showStatus(run) {
+    if (shown !== run && !shown && !leave()) return;
+    shown = run; cur = null;
+    ed.className = 'deditor dstatus';
+    ed.replaceChildren(run.view);
+    run.con.scrollTop = run.con.scrollHeight;
+    renderList();
   }
 
-  function buildRunView(targets) {
-    runsBox.hidden = false;
+  // ---------- status view ----------
+  const fmtDur = ms => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
+  function buildStatus(run, targets) {
+    const stages = dStagesOf(run.dep);
+    const multi = targets.length > 1;
+    const stepDefs = [['connect', 'Connect'], ...stages.map(([k, t]) => [k, t]), ['done', 'Done']];
+    run.bar = el('div', { className: 'dprog-fill' });
+    run.pct = el('b', { className: 'dprog-pct', textContent: '0%' });
+    run.state = el('span', { className: 'dbadge running', textContent: 'Running' });
+    run.time = el('small', { className: 'muted' });
+    run.stopBtn = el('button', { className: 'danger-btn', textContent: '■ Stop', onclick: () => api.deploy.cancel(run.id) });
+    run.againBtn = el('button', { className: 'primary', textContent: '↻ Run again', hidden: true, onclick: () => runFromList(list.find(x => x.id === run.dep.id) || run.dep) });
+    run.con = el('pre', { className: 'dcon mono' });
+    run.multi = multi;
+
     const rows = targets.map(t => {
+      const steps = Object.fromEntries(stepDefs.map(([k, title], i) => {
+        const dot = el('span', { className: 'dsdot', textContent: i + 1 });
+        const node = el('div', { className: 'dstep2 pending' }, dot, el('small', { textContent: title }));
+        return [k, { node, dot, num: i + 1, state: 'pending' }];
+      }));
       const badge = el('span', { className: 'dbadge pending', textContent: D_STATUS.pending });
-      const pills = Object.fromEntries(D_STAGES.map(([k, title]) => [k, el('span', { className: 'dpill', textContent: title })]));
-      const logEl = el('pre', { className: 'dlog mono' });
-      const det = el('details', {},
-        el('summary', {}, badge, el('b', { textContent: t.name }), el('small', { className: 'mono muted', textContent: t.host }),
-          el('span', { className: 'grow' }), ...Object.values(pills)),
-        logEl);
-      run.targets.set(t.id, { badge, pills, logEl, det });
-      return det;
+      run.targets.set(t.id, { name: t.name, steps, badge, status: 'pending', bol: true });
+      const track = [];
+      Object.values(steps).forEach((st, i) => { if (i) track.push(el('span', { className: 'dsline' })); track.push(st.node); });
+      return el('div', { className: 'dtrack' },
+        el('div', { className: 'dtname' }, el('b', { textContent: t.name }), el('small', { className: 'mono muted', textContent: t.host }), badge),
+        el('div', { className: 'dsteps' }, ...track));
     });
-    runsBox.replaceChildren(
-      el('header', {}, el('b', { textContent: `Run: ${run.name}` }),
-        el('small', { className: 'muted', textContent: ` started ${run.started.toLocaleTimeString()}` }),
-        el('span', { className: 'grow' }), el('span', { className: 'drunstate', textContent: 'Running…' })),
-      ...rows);
+
+    run.view = el('div', { className: 'dsx' },
+      el('section', { className: 'dsx-top' },
+        el('div', { className: 'dhead' },
+          el('h2', { textContent: run.dep.name }), run.state, run.time,
+          el('span', { className: 'grow' }),
+          el('button', { textContent: '✎ Edit', onclick: () => { const d = list.find(x => x.id === run.dep.id); if (d) select(d); } }),
+          run.stopBtn, run.againBtn),
+        el('div', { className: 'dprog' }, el('div', { className: 'dprog-track' }, run.bar), run.pct),
+        el('div', { className: 'dtracks' }, ...rows)),
+      el('section', { className: 'dsx-con' },
+        el('header', {}, el('b', { textContent: 'Console' }), el('span', { className: 'grow' }),
+          el('button', { className: 'dact', textContent: 'Copy', onclick: () => navigator.clipboard.writeText(run.con.textContent).then(() => toast('Console copied.')) })),
+        run.con));
+    paintTime(run);
   }
 
-  function onEvent(ev) {
+  function setStep(t, key, state) {
+    const st = t.steps[key];
+    if (!st) return;
+    st.state = state;
+    st.node.className = `dstep2 ${state}`;
+    st.dot.textContent = D_ICON[state] || (state === 'running' ? '' : st.num);
+  }
+  function paintProgress(run) {
+    let sum = 0;
+    for (const t of run.targets.values()) {
+      const all = Object.values(t.steps);
+      sum += D_FINAL.includes(t.status) ? 1 : all.filter(s => s.state !== 'pending' && s.state !== 'running').length / all.length;
+    }
+    const pct = Math.round((sum / run.targets.size) * 100);
+    run.bar.style.width = pct + '%';
+    run.pct.textContent = pct + '%';
+    const st = [...run.targets.values()].map(t => t.status);
+    run.bar.className = 'dprog-fill' + (st.includes('failed') || st.includes('cancelled') ? ' failed' : st.includes('warning') ? ' warn' : '');
+  }
+  function paintTime(run) {
+    run.time.textContent = `started ${new Date(run.started).toLocaleTimeString()} · ${fmtDur((run.ended || Date.now()) - run.started)}`;
+  }
+  let timer = null; // one clock for every running deployment
+  function tick() {
+    if (timer) return;
+    timer = setInterval(() => {
+      const live = [...runs.values()].filter(r => r.running);
+      live.forEach(paintTime);
+      if (!live.length) { clearInterval(timer); timer = null; }
+    }, 1000);
+  }
+
+  function log(run, t, text, level) {
+    const out = [];
+    for (const part of text.split(/(?<=\n)/)) {
+      if (run.multi && t?.bol) out.push(el('span', { className: 'l-who', textContent: `[${t.name}] ` }));
+      out.push(el('span', { className: `l-${level}`, textContent: part }));
+      if (t) t.bol = part.endsWith('\n');
+    }
+    const c = run.con;
+    const atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 30;
+    c.append(...out);
+    if (atBottom) c.scrollTop = c.scrollHeight;
+  }
+
+  function onEvent(run, ev) {
     if (ev.kind === 'done') {
       run.running = false;
+      run.ended = Date.now();
       deployRunHandlers.delete(run.id);
       const states = [...run.targets.values()].map(t => t.status);
       const failed = states.filter(x => x === 'failed').length;
       const summary = failed ? `${failed} of ${states.length} failed`
-        : states.includes('warning') ? 'Finished with alerts' : states.includes('cancelled') ? 'Cancelled' : 'All servers succeeded';
-      runsBox.querySelector('.drunstate').textContent = summary;
-      toast(`${run.name}: ${summary}`, !!failed);
-      if (cur) renderEditor();
+        : states.includes('cancelled') ? 'Cancelled' : states.includes('warning') ? 'Finished with alerts' : 'All servers succeeded';
+      const cls = failed || states.includes('cancelled') ? 'failed' : states.includes('warning') ? 'warning' : 'success';
+      run.state.className = `dbadge ${cls}`;
+      run.state.textContent = summary;
+      run.stopBtn.hidden = true;
+      run.againBtn.hidden = false;
+      paintTime(run);
+      paintProgress(run);
+      toast(`${run.dep.name}: ${summary}`, !!failed);
+      renderList();
+      if (cur?.id === run.dep.id) renderEditor();
       return;
     }
     const t = run.targets.get(ev.target);
@@ -267,15 +392,22 @@ function initDeployments(panel, server) {
       t.status = ev.status;
       t.badge.className = `dbadge ${ev.status}`;
       t.badge.textContent = D_STATUS[ev.status] || ev.status;
-      if (ev.status === 'running' || ev.status === 'failed') t.det.open = true;
+      if (ev.status === 'running') setStep(t, 'connect', 'running');
+      if (D_FINAL.includes(ev.status)) {
+        const bad = ev.status === 'failed' || ev.status === 'cancelled';
+        for (const [k, st] of Object.entries(t.steps)) {
+          if (k === 'done') setStep(t, k, ev.status === 'skipped' ? 'skipped' : bad ? 'failed' : ev.status === 'warning' ? 'warn' : 'ok');
+          else if (st.state === 'running') setStep(t, k, bad ? 'failed' : 'ok');
+          else if (st.state === 'pending') setStep(t, k, 'skipped');
+        }
+      }
     } else if (ev.kind === 'stage') {
-      t.pills[ev.stage].className = `dpill ${ev.state}`;
+      if (t.steps.connect.state === 'running') setStep(t, 'connect', 'ok');
+      setStep(t, ev.stage, ev.state);
     } else if (ev.kind === 'log') {
-      const atBottom = t.logEl.scrollHeight - t.logEl.scrollTop - t.logEl.clientHeight < 30;
-      const line = ev.level === 'out' ? ev.text : ev.text + '\n';
-      t.logEl.append(el('span', { className: `l-${ev.level}`, textContent: line }));
-      if (atBottom) t.logEl.scrollTop = t.logEl.scrollHeight;
+      log(run, t, ev.level === 'out' ? ev.text : ev.text + '\n', ev.level);
     }
+    paintProgress(run);
   }
 
   load();
