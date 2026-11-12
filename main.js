@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, safeStorage, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, dialog, shell, clipboard } = require('electron');
 const { Client } = require('ssh2');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { StringDecoder } = require('node:string_decoder');
 const { METRICS_CMD, parseMetrics } = require('./metrics');
-const { shq } = require('./util');
+const { shq, buildRdp } = require('./util');
 
 const AI_MODEL = 'claude-sonnet-5-5';
 const rpath = path.posix;
@@ -55,11 +55,13 @@ ipcMain.handle('servers:list', () => servers().map(publicServer));
 ipcMain.handle('servers:save', (_e, s) => {
   const list = servers();
   const prev = list.find(x => x.id === s.id);
+  const type = s.type === 'rdp' ? 'rdp' : 'ssh';
   const rec = {
     ...prev, // keeps lastSeen, logPaths
-    id: s.id || crypto.randomUUID(),
-    name: String(s.name || s.host), host: String(s.host), port: Number(s.port) || 22,
-    username: String(s.username), keyPath: s.keyPath || '',
+    id: s.id || crypto.randomUUID(), type,
+    name: String(s.name || s.host), host: String(s.host), port: Number(s.port) || (type === 'rdp' ? 3389 : 22),
+    username: String(s.username || ''), domain: type === 'rdp' ? String(s.domain || '') : '',
+    keyPath: type === 'ssh' ? s.keyPath || '' : '',
     tags: Array.isArray(s.tags) ? s.tags : [], starred: !!s.starred,
     passwordEnc: s.password ? enc(s.password) : prev?.passwordEnc || '',
   };
@@ -163,6 +165,29 @@ ipcMain.on('ssh:closeShell', (_e, id) => shells.get(id)?.close());
 
 // ponytail: renderer polls only the visible server; fleet-wide view would poll every server.
 ipcMain.handle('ssh:metrics', async (_e, connId) => parseMetrics(await exec(getConn(connId).conn, METRICS_CMD)));
+
+// ---------- RDP (hands off to the OS RDP client: Windows App on macOS, mstsc on Windows) ----------
+ipcMain.handle('rdp:open', async (_e, serverId) => {
+  const s = servers().find(x => x.id === serverId);
+  if (!s) throw new Error('Server not found');
+  const dir = dataFile('rdp');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, `${s.name.replace(/[^\w.-]+/g, '_')}-${s.id.slice(0, 8)}.rdp`);
+  fs.writeFileSync(file, buildRdp(s), { mode: 0o600 });
+  const err = await shell.openPath(file);
+  if (err) {
+    throw new Error(process.platform === 'darwin'
+      ? 'No RDP app found. Install "Windows App" from the Mac App Store, then try again.'
+      : `Could not open the RDP file: ${err}`);
+  }
+  patchServer(serverId, { lastSeen: Date.now() });
+  // .rdp can't carry a password on macOS: put it on the clipboard for the login prompt, then wipe it.
+  if (!s.passwordEnc) return { copied: false };
+  const pw = dec(s.passwordEnc);
+  clipboard.writeText(pw);
+  setTimeout(() => { if (clipboard.readText() === pw) clipboard.clear(); }, 45000);
+  return { copied: true };
+});
 
 // ---------- files (SFTP) ----------
 const sftpOf = connId => {

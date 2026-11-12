@@ -88,18 +88,34 @@ function renderServers() {
   $('#serverRows').replaceChildren(...rows.map(s => {
     const tr = el('tr', {},
       el('td', {}, el('span', { className: 'dot' + (views.has(s.id) ? ' on' : '') }), el('b', { textContent: s.name })),
-      el('td', { className: 'mono', textContent: `${s.username}@${s.host}` + (s.port !== 22 ? `:${s.port}` : '') }),
+      el('td', {}, el('span', { className: 'proto ' + typeOf(s), textContent: typeOf(s).toUpperCase() })),
+      el('td', { className: 'mono', textContent: `${s.username ? s.username + '@' : ''}${s.host}` + (s.port !== defaultPort(s) ? `:${s.port}` : '') }),
       el('td', {}, ...s.tags.map(t => el('span', { className: 'tag', textContent: t }))),
       el('td', { className: 'muted', textContent: ago(s.lastSeen) }),
       el('td', { className: 'r actions' },
         iconBtn(s.starred ? '★' : '☆', s.starred ? 'Unfavorite' : 'Favorite', () => toggleStar(s), 'icon' + (s.starred ? ' star' : '')),
         iconBtn('✎', 'Edit', () => editServer(s)),
         iconBtn('🗑', 'Delete', () => deleteServer(s), 'icon danger'),
-        iconBtn(views.has(s.id) ? '↗ Open' : '▶ Connect', 'Connect', () => openServer(s), 'primary')));
-    tr.ondblclick = () => openServer(s);
+        iconBtn(views.has(s.id) ? '↗ Open' : '▶ Connect', 'Connect', () => connectServer(s), 'primary')));
+    tr.ondblclick = () => connectServer(s);
     return tr;
   }));
   $('#emptyHome').hidden = servers.length > 0;
+}
+
+const typeOf = s => (s.type === 'rdp' ? 'rdp' : 'ssh');
+const defaultPort = s => (typeOf(s) === 'rdp' ? 3389 : 22);
+
+function connectServer(s) {
+  return typeOf(s) === 'rdp' ? openRdp(s) : openServer(s);
+}
+
+async function openRdp(s) {
+  try {
+    const r = await api.rdp.open(s.id);
+    toast(`Opening ${s.name} in Windows App…` + (r.copied ? ' Password copied to clipboard (cleared in 45 s).' : ''));
+    refreshServers();
+  } catch (e) { toast(cleanErr(e), true); }
 }
 
 async function toggleStar(s) {
@@ -111,17 +127,34 @@ function editServer(s = {}) {
   const f = $('#serverForm');
   f.reset();
   for (const k of ['id', 'name', 'host', 'port', 'username', 'keyPath']) if (s[k] != null) f.elements[k].value = s[k];
+  f.elements.type.value = typeOf(s);
+  f.elements.domain.value = s.domain || '';
+  syncFormType();
   f.elements.tags.value = (s.tags || []).join(', ');
   f.elements.starred.checked = !!s.starred;
   $('#serverDlg').returnValue = ''; // Esc must not reuse the last 'save'
   $('#serverDlg').showModal();
 }
 
+// Show only the fields that apply; swap the default port when the type changes.
+function syncFormType() {
+  const f = $('#serverForm');
+  const rdp = f.elements.type.value === 'rdp';
+  f.querySelectorAll('.rdp-only').forEach(x => (x.hidden = !rdp));
+  f.querySelectorAll('.ssh-only').forEach(x => (x.hidden = rdp));
+  f.elements.username.required = !rdp; // RDP can prompt for the user
+  const port = f.elements.port;
+  if (rdp && port.value === '22') port.value = '3389';
+  if (!rdp && port.value === '3389') port.value = '22';
+}
+$('#serverForm').elements.type.onchange = syncFormType;
+
 $('#serverDlg').addEventListener('close', async () => {
   if ($('#serverDlg').returnValue !== 'save') return;
   const e = $('#serverForm').elements;
   await api.servers.save({
-    id: e.id.value || undefined, name: e.name.value, host: e.host.value, port: e.port.value,
+    id: e.id.value || undefined, type: e.type.value, domain: e.domain.value.trim(),
+    name: e.name.value, host: e.host.value, port: e.port.value,
     username: e.username.value, keyPath: e.keyPath.value.trim(), password: e.password.value,
     tags: e.tags.value.split(',').map(t => t.trim()).filter(Boolean), starred: e.starred.checked,
   });

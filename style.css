@@ -151,3 +151,10 @@ body.folded .side { width: 58px; padding-left: 6px; padding-right: 6px; }
 body.folded .side .lbl { display: none; }
 body.folded .navitem { justify-content: center; padding-left: 0; padding-right: 0; }
 body.folded .fold { transform: translateY(-50%) rotate(180deg); }
+
+/* ---------- server types ---------- */
+.proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; border-radius: 4px; padding: 1px 6px; border: 1px solid; }
+.proto.ssh { color: var(--accent); border-color: #3ddc5f55; }
+.proto.rdp { color: #4fb3ff; border-color: #4fb3ff55; }
+.hint { color: var(--muted); font-size: 11px; margin: 0 0 8px; }
+dialog select { width: 100%; }
