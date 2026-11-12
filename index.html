@@ -14,13 +14,14 @@
     <!-- ===== Home ===== -->
     <section id="home" class="view">
       <aside class="side">
-        <div class="brand">Era<span>Term</span></div>
-        <button id="addBtn" class="primary wide">＋ New connection</button>
-        <h6>Workspace</h6>
-        <button class="navitem active" id="navAll">▤ All Servers <span class="count" id="navCount"></span></button>
-        <button class="navitem" id="navFav">☆ Favorites</button>
+        <button class="fold" title="Collapse / expand menu">‹</button>
+        <div class="brand">E<span class="lbl">ra</span><span class="g lbl">Term</span></div>
+        <button id="addBtn" class="primary wide" title="New connection">＋<span class="lbl"> New connection</span></button>
+        <h6 class="lbl">Workspace</h6>
+        <button class="navitem active" id="navAll" title="All Servers"><i>▤</i><span class="lbl">All Servers</span><span class="count lbl" id="navCount"></span></button>
+        <button class="navitem" id="navFav" title="Favorites"><i>☆</i><span class="lbl">Favorites</span></button>
         <span class="grow"></span>
-        <button class="navitem" id="settingsBtn">⚙ Settings</button>
+        <button class="navitem" id="settingsBtn" title="Settings"><i>⚙</i><span class="lbl">Settings</span></button>
       </aside>
       <div class="content">
         <header class="pagehead">
@@ -49,9 +50,10 @@
       </header>
       <div class="srvbody">
         <aside class="side">
-          <button class="navitem" data-panel="files">▭ File Manager</button>
-          <button class="navitem" data-panel="term">›_ Terminal</button>
-          <button class="navitem" data-panel="logs">≡ Logs</button>
+          <button class="fold" title="Collapse / expand menu">‹</button>
+          <button class="navitem" data-panel="files" title="File Manager"><i>▭</i><span class="lbl">File Manager</span></button>
+          <button class="navitem" data-panel="term" title="Terminal"><i>›_</i><span class="lbl">Terminal</span></button>
+          <button class="navitem" data-panel="logs" title="Logs"><i>≡</i><span class="lbl">Logs</span></button>
         </aside>
 
         <!-- File manager -->

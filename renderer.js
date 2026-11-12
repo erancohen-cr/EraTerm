@@ -550,3 +550,13 @@ setInterval(() => {
 }, 5000);
 
 refreshServers();
+
+// ================= foldable side menus (one state for all menus) =================
+const setFolded = on => {
+  document.body.classList.toggle('folded', on);
+  try { localStorage.setItem('sideFolded', on ? '1' : ''); } catch { /* storage unavailable: just don't remember */ }
+};
+try { setFolded(localStorage.getItem('sideFolded') === '1'); } catch { /* default: expanded */ }
+document.addEventListener('click', e => {
+  if (e.target.closest('.fold')) setFolded(!document.body.classList.contains('folded'));
+});
