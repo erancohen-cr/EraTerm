@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
-const { shq, logLevel, buildRdp } = require('./util');
+const { shq, logLevel, buildRdp, remoteDir } = require('./util');
 
 test('shq survives quotes, spaces and $', () => {
   const nasty = `it's a "file" $(rm -rf /) ; x`;
@@ -26,4 +26,12 @@ test('buildRdp', () => {
   // newline injection can't add a setting line
   const evil = buildRdp({ host: 'h', username: 'x\r\ndrivestoredirect:s:*' });
   assert.doesNotMatch(evil, /^drivestoredirect/m);
+});
+
+test('remoteDir', () => {
+  const sh = expr => execFileSync('sh', ['-c', `printf %s ${expr}`], { env: { HOME: '/home/me' } }).toString();
+  assert.strictEqual(sh(remoteDir('~')), '/home/me');
+  assert.strictEqual(sh(remoteDir('~/my app')), '/home/me/my app');
+  assert.strictEqual(sh(remoteDir('/opt/$(x)')), '/opt/$(x)');
+  assert.strictEqual(sh(remoteDir('')), '/home/me');
 });

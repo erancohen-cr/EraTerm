@@ -14,3 +14,10 @@ test('parseMetrics', () => {
   });
   assert.strictEqual(parseMetrics('garbage').cpu, null);
 });
+
+test('parseMetrics macOS', () => {
+  const m = parseMetrics('CPUIDLE 62.19\nMEM 25769803776 18765398016\nDISK 494332366848 306877767680\n');
+  assert.strictEqual(m.cpu, 38);
+  assert.strictEqual(m.memTotal, 25769803776);
+  assert.strictEqual(m.diskUsed, 306877767680);
+});

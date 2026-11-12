@@ -19,21 +19,41 @@
         <button id="addBtn" class="primary wide" title="New connection">＋<span class="lbl"> New connection</span></button>
         <h6 class="lbl">Workspace</h6>
         <button class="navitem active" id="navAll" title="All Servers"><i>▤</i><span class="lbl">All Servers</span><span class="count lbl" id="navCount"></span></button>
-        <button class="navitem" id="navFav" title="Favorites"><i>☆</i><span class="lbl">Favorites</span></button>
+        <button class="navitem" id="navFav" title="Favorites"><i>☆</i><span class="lbl">Favorites</span><span class="count lbl" id="favCount"></span></button>
+        <button class="navitem" id="navUsers" title="Users"><i>👤</i><span class="lbl">Users</span><span class="count lbl" id="userCount"></span></button>
+        <h6 class="lbl">Groups</h6>
+        <div id="navGroups" class="navgroups"></div>
         <span class="grow"></span>
         <button class="navitem" id="settingsBtn" title="Settings"><i>⚙</i><span class="lbl">Settings</span></button>
       </aside>
       <div class="content">
-        <header class="pagehead">
-          <h1 id="homeTitle">All Servers</h1><span class="badge" id="countBadge"></span>
-          <span class="grow"></span>
-          <input id="filter" class="search" placeholder="Search servers, IPs, users, tags…">
-        </header>
-        <table class="grid">
-          <thead><tr><th>Server</th><th>Type</th><th>Connection</th><th>Tags</th><th>Last seen</th><th class="r">Actions</th></tr></thead>
-          <tbody id="serverRows"></tbody>
-        </table>
-        <p id="emptyHome" class="empty">No servers yet. Click “New connection” to add one.</p>
+        <div id="serversView">
+          <header class="pagehead">
+            <h1 id="homeTitle">All Servers</h1><span class="badge" id="countBadge"></span>
+            <span class="grow"></span>
+            <button id="collapseAll" title="Collapse all groups">⊟ Collapse all</button>
+            <button id="expandAll" title="Expand all groups">⊞ Expand all</button>
+            <input id="filter" class="search" placeholder="Search servers, IPs, users, tags…">
+          </header>
+          <table class="grid">
+            <thead><tr><th>Server</th><th>Type</th><th>Connection</th><th>Tags</th><th>Last seen</th><th class="r">Actions</th></tr></thead>
+            <tbody id="serverRows"></tbody>
+          </table>
+          <p id="emptyHome" class="empty">No servers yet. Click “New connection” to add one.</p>
+        </div>
+        <div id="usersView" hidden>
+          <header class="pagehead">
+            <h1>Users</h1><span class="badge" id="usersBadge"></span>
+            <span class="grow"></span>
+            <button id="addUserBtn" class="primary">＋ New user</button>
+          </header>
+          <p class="muted">Saved logins you can pick when adding a server. Passwords are encrypted with your macOS Keychain and never shown again.</p>
+          <table class="grid">
+            <thead><tr><th>Name</th><th>Username</th><th>Authentication</th><th>Used by</th><th class="r">Actions</th></tr></thead>
+            <tbody id="userRows"></tbody>
+          </table>
+          <p id="emptyUsers" class="empty">No saved users yet.</p>
+        </div>
       </div>
     </section>
   </div>
@@ -52,6 +72,7 @@
         <aside class="side">
           <button class="fold" title="Collapse / expand menu">‹</button>
           <button class="navitem" data-panel="files" title="File Manager"><i>▭</i><span class="lbl">File Manager</span></button>
+          <button class="navitem" data-panel="deploy" title="Deployments"><i>🚀</i><span class="lbl">Deployments</span></button>
           <button class="navitem" data-panel="term" title="Terminal"><i>›_</i><span class="lbl">Terminal</span></button>
           <button class="navitem" data-panel="logs" title="Logs"><i>≡</i><span class="lbl">Logs</span></button>
         </aside>
@@ -88,9 +109,26 @@
           </div>
         </div>
 
+        <!-- Deployments -->
+        <div class="panel deploy" hidden>
+          <aside class="dlist">
+            <h6>Deployments · <span class="dcount">0</span></h6>
+            <button class="dnew primary">＋ New deployment</button>
+            <ul class="dl"></ul>
+          </aside>
+          <div class="deditor"></div>
+        </div>
+
         <!-- Terminal -->
         <div class="panel term" hidden>
-          <div class="xhost main"></div>
+          <div class="tcol">
+          <div class="ttabs">
+            <span class="ttablist"></span>
+            <button class="tnew icon" title="New session to this server">＋</button>
+            <span class="grow"></span>
+            <button class="tscripts" title="Show scripts">{ } Scripts</button>
+          </div>
+          <div class="thosts"><p class="tempty empty" hidden>No open sessions. Click ＋ to start one.</p></div>
           <section class="ai">
             <form class="aiForm">
               <input class="aiInput" placeholder="Ask AI: e.g. show the 5 largest files in /var/log" autocomplete="off">
@@ -105,6 +143,19 @@
             </div>
             <p class="aiError error"></p>
           </section>
+          </div>
+          <aside class="scripts" hidden>
+            <header>
+              <b>Scripts</b><span class="grow"></span>
+              <button class="sc-up icon" title="Import scripts (.json, .sh, .txt)">⤒</button>
+              <button class="sc-down icon" title="Export your scripts (.json)">⤓</button>
+              <button class="sc-refresh icon" title="Refresh">⟳</button>
+              <button class="sc-add icon" title="New script">＋</button>
+              <button class="sc-close icon" title="Close">×</button>
+            </header>
+            <input class="sc-filter search" placeholder="Search scripts…">
+            <ul class="sc-list"></ul>
+          </aside>
         </div>
 
         <!-- Logs -->
@@ -152,13 +203,44 @@
       <label>Name <input name="name"></label>
       <label>Host <input name="host" required></label>
       <label>Port <input name="port" type="number" value="22" min="1" max="65535"></label>
-      <label>User <input name="username" required></label>
+      <label>Group <input name="group" list="groupList" placeholder="e.g. Production (type a new name to create one)"></label>
+      <datalist id="groupList"></datalist>
+      <label>Login
+        <select name="userId"><option value="">Enter username / password below</option></select>
+      </label>
+      <p class="hint saved-user" hidden>Uses the saved user's username and password. Manage them in Users.</p>
+      <label class="own-cred">User <input name="username" list="usernameList" required></label>
+      <datalist id="usernameList"></datalist>
       <label class="rdp-only">Domain <input name="domain" placeholder="optional, e.g. CORP"></label>
-      <label class="ssh-only">Private key path <input name="keyPath" placeholder="~/.ssh/id_ed25519"></label>
-      <label>Password <input name="password" type="password" placeholder="leave blank to keep / use key or agent"></label>
+      <label class="ssh-only own-cred">Private key path <input name="keyPath" placeholder="~/.ssh/id_ed25519"></label>
+      <label class="own-cred">Password <input name="password" type="password" placeholder="leave blank to keep / use key or agent"></label>
       <p class="rdp-only hint">RDP opens in Microsoft Windows App (Mac App Store). A saved password is copied to the clipboard for its login prompt and cleared after 45 s.</p>
       <label>Tags <input name="tags" placeholder="prod, web"></label>
       <label class="row"><input name="starred" type="checkbox"> Favorite</label>
+      <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="scriptDlg">
+    <form method="dialog" id="scriptForm">
+      <h3>Script</h3>
+      <input type="hidden" name="id">
+      <label>Name <input name="name" required></label>
+      <label>Description <input name="description"></label>
+      <label>Command or script <textarea name="command" class="mono" rows="9" required spellcheck="false" placeholder="df -h&#10;# multi-line scripts run with sh (or the #! interpreter)"></textarea></label>
+      <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="userDlg">
+    <form method="dialog" id="userForm">
+      <h3>User</h3>
+      <input type="hidden" name="id">
+      <label>Name <input name="label" placeholder="e.g. Prod admin"></label>
+      <label>Username <input name="username" required autocomplete="off"></label>
+      <label>Password <input name="password" type="password" autocomplete="new-password" placeholder="leave blank to keep the saved one"></label>
+      <label class="row"><input name="clearPassword" type="checkbox"> Remove the saved password</label>
+      <label>Private key path (SSH) <input name="keyPath" placeholder="~/.ssh/id_ed25519 (optional)"></label>
       <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
     </form>
   </dialog>
@@ -184,5 +266,6 @@
   <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="util.js"></script>
   <script src="renderer.js"></script>
+  <script src="deployments.js"></script>
 </body>
 </html>

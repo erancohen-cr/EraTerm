@@ -25,4 +25,12 @@ function buildRdp({ host, port, username, domain }) {
   ].filter(Boolean).join('\r\n') + '\r\n';
 }
 
-if (typeof module !== 'undefined') module.exports = { shq, logLevel, buildRdp };
+// Remote directory as a shell word: "~" / "~/x" expand to $HOME, everything else is quoted literally.
+function remoteDir(d) {
+  d = String(d ?? '').trim() || '~';
+  if (d === '~') return '"$HOME"';
+  if (d.startsWith('~/')) return `"$HOME"/${shq(d.slice(2))}`;
+  return shq(d);
+}
+
+if (typeof module !== 'undefined') module.exports = { shq, logLevel, buildRdp, remoteDir };

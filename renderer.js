@@ -67,41 +67,105 @@ function show(id) {
 }
 $('#homeTab').onclick = () => show('home');
 
-// ================= home: server list =================
-let servers = [];
-let favOnly = false;
+// ================= home: servers, groups, users =================
+let servers = [], users = [];
+let homeMode = 'all'; // 'all' | 'fav' | 'users' | 'group:<name>'
+const UNGROUPED = 'Ungrouped';
+const groupOf = s => s.group || UNGROUPED;
+const modeGroup = () => (homeMode.startsWith('group:') ? homeMode.slice(6) : null);
+let collapsed = new Set();
+try { collapsed = new Set(JSON.parse(localStorage.getItem('collapsedGroups')) || []); } catch { /* start expanded */ }
+const saveCollapsed = () => { try { localStorage.setItem('collapsedGroups', JSON.stringify([...collapsed])); } catch { /* ignore */ } };
 
 async function refreshServers() {
-  servers = await api.servers.list();
+  [servers, users] = await Promise.all([api.servers.list(), api.users.list()]);
+  renderNav();
   renderServers();
+  renderUsers();
+}
+
+function groupNames() {
+  const named = [...new Set(servers.map(s => s.group).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  return servers.some(s => !s.group) ? [...named, UNGROUPED] : named;
+}
+
+function setMode(mode) {
+  homeMode = mode;
+  const g = modeGroup();
+  if (g) { collapsed.delete(g); saveCollapsed(); }
+  renderNav();
+  renderServers();
+  $('.content').scrollTop = 0;
+}
+
+function renderNav() {
+  const g = modeGroup();
+  $('#navCount').textContent = servers.length;
+  $('#favCount').textContent = servers.filter(s => s.starred).length || '';
+  $('#userCount').textContent = users.length || '';
+  $('#navAll').classList.toggle('active', homeMode === 'all');
+  $('#navFav').classList.toggle('active', homeMode === 'fav');
+  $('#navUsers').classList.toggle('active', homeMode === 'users');
+  $('#navGroups').replaceChildren(...groupNames().map(name => el('button', {
+    className: 'navitem' + (g === name ? ' active' : ''), title: name, onclick: () => setMode('group:' + name),
+  }, el('i', { textContent: name === UNGROUPED ? '◌' : '▣' }), el('span', { className: 'lbl', textContent: name }),
+  el('span', { className: 'count lbl', textContent: servers.filter(s => groupOf(s) === name).length }))));
+  $('#serversView').hidden = homeMode === 'users';
+  $('#usersView').hidden = homeMode !== 'users';
+  // suggestions for the server form
+  $('#groupList').replaceChildren(...groupNames().filter(x => x !== UNGROUPED).map(value => el('option', { value })));
+  $('#usernameList').replaceChildren(...users.map(u => el('option', { value: u.username, label: u.label })));
+}
+
+function serverRow(s) {
+  const tr = el('tr', { className: 'srow' },
+    el('td', {}, el('span', { className: 'dot' + (views.has(s.id) ? ' on' : '') }), el('b', { textContent: s.name })),
+    el('td', {}, el('span', { className: 'proto ' + typeOf(s), textContent: typeOf(s).toUpperCase() })),
+    el('td', { className: 'mono', title: s.userLabel ? `Login: saved user "${s.userLabel}"` : '' },
+      `${s.username ? s.username + '@' : ''}${s.host}` + (s.port !== defaultPort(s) ? `:${s.port}` : ''),
+      s.userLabel ? el('span', { className: 'ulink', textContent: ' 👤' }) : null),
+    el('td', {}, ...s.tags.map(t => el('span', { className: 'tag', textContent: t }))),
+    el('td', { className: 'muted', textContent: ago(s.lastSeen) }),
+    el('td', { className: 'r actions' },
+      iconBtn(s.starred ? '★' : '☆', s.starred ? 'Unfavorite' : 'Favorite', () => toggleStar(s), 'icon' + (s.starred ? ' star' : '')),
+      iconBtn('✎', 'Edit', () => editServer(s)),
+      iconBtn('🗑', 'Delete', () => deleteServer(s), 'icon danger'),
+      iconBtn(views.has(s.id) ? '↗ Open' : '▶ Connect', 'Connect', () => connectServer(s), 'primary')));
+  tr.ondblclick = () => connectServer(s);
+  return tr;
 }
 
 function renderServers() {
   const q = $('#filter').value.toLowerCase();
-  const rows = servers
-    .filter(s => !favOnly || s.starred)
-    .filter(s => !q || [s.name, s.host, s.username, ...s.tags].some(x => x.toLowerCase().includes(q)))
+  const g = modeGroup();
+  const list = servers
+    .filter(s => homeMode !== 'fav' || s.starred)
+    .filter(s => !g || groupOf(s) === g)
+    .filter(s => !q || [s.name, s.host, s.username, s.group || '', ...s.tags].some(x => x.toLowerCase().includes(q)))
     .sort((a, b) => b.starred - a.starred || a.name.localeCompare(b.name));
-  $('#countBadge').textContent = `${rows.length} server${rows.length === 1 ? '' : 's'}`;
-  $('#navCount').textContent = servers.length;
-  $('#homeTitle').textContent = favOnly ? 'Favorites' : 'All Servers';
-  $('#serverRows').replaceChildren(...rows.map(s => {
-    const tr = el('tr', {},
-      el('td', {}, el('span', { className: 'dot' + (views.has(s.id) ? ' on' : '') }), el('b', { textContent: s.name })),
-      el('td', {}, el('span', { className: 'proto ' + typeOf(s), textContent: typeOf(s).toUpperCase() })),
-      el('td', { className: 'mono', textContent: `${s.username ? s.username + '@' : ''}${s.host}` + (s.port !== defaultPort(s) ? `:${s.port}` : '') }),
-      el('td', {}, ...s.tags.map(t => el('span', { className: 'tag', textContent: t }))),
-      el('td', { className: 'muted', textContent: ago(s.lastSeen) }),
-      el('td', { className: 'r actions' },
-        iconBtn(s.starred ? '★' : '☆', s.starred ? 'Unfavorite' : 'Favorite', () => toggleStar(s), 'icon' + (s.starred ? ' star' : '')),
-        iconBtn('✎', 'Edit', () => editServer(s)),
-        iconBtn('🗑', 'Delete', () => deleteServer(s), 'icon danger'),
-        iconBtn(views.has(s.id) ? '↗ Open' : '▶ Connect', 'Connect', () => connectServer(s), 'primary')));
-    tr.ondblclick = () => connectServer(s);
-    return tr;
-  }));
+  $('#countBadge').textContent = `${list.length} server${list.length === 1 ? '' : 's'}`;
+  $('#homeTitle').textContent = g || (homeMode === 'fav' ? 'Favorites' : 'All Servers');
+  const rows = [];
+  for (const name of groupNames()) {
+    const members = list.filter(s => groupOf(s) === name);
+    if (!members.length) continue;
+    const shut = !q && collapsed.has(name); // searching always shows matches
+    rows.push(el('tr', {
+      className: 'grprow' + (shut ? ' shut' : ''),
+      onclick: () => { collapsed[collapsed.has(name) ? 'delete' : 'add'](name); saveCollapsed(); renderServers(); },
+    }, el('td', { colSpan: 6 },
+      el('span', { className: 'caret', textContent: shut ? '▸' : '▾' }),
+      el('b', { textContent: name }),
+      el('span', { className: 'count', textContent: members.length }),
+      el('span', { className: 'grow' }),
+      iconBtn('＋', `Add a server to ${name}`, () => editServer({ group: name === UNGROUPED ? '' : name })))));
+    if (!shut) rows.push(...members.map(serverRow));
+  }
+  $('#serverRows').replaceChildren(...rows);
   $('#emptyHome').hidden = servers.length > 0;
 }
+$('#collapseAll').onclick = () => { collapsed = new Set(groupNames()); saveCollapsed(); renderServers(); };
+$('#expandAll').onclick = () => { collapsed.clear(); saveCollapsed(); renderServers(); };
 
 const typeOf = s => (s.type === 'rdp' ? 'rdp' : 'ssh');
 const defaultPort = s => (typeOf(s) === 'rdp' ? 3389 : 22);
@@ -126,9 +190,12 @@ async function toggleStar(s) {
 function editServer(s = {}) {
   const f = $('#serverForm');
   f.reset();
-  for (const k of ['id', 'name', 'host', 'port', 'username', 'keyPath']) if (s[k] != null) f.elements[k].value = s[k];
+  for (const k of ['id', 'name', 'host', 'port', 'username', 'keyPath', 'group']) if (s[k] != null) f.elements[k].value = s[k];
   f.elements.type.value = typeOf(s);
   f.elements.domain.value = s.domain || '';
+  f.elements.userId.replaceChildren(el('option', { value: '', textContent: 'Enter username / password below' }),
+    ...users.map(u => el('option', { value: u.id, textContent: `Saved user: ${u.label} (${u.username})` })));
+  f.elements.userId.value = s.userId || '';
   syncFormType();
   f.elements.tags.value = (s.tags || []).join(', ');
   f.elements.starred.checked = !!s.starred;
@@ -140,22 +207,32 @@ function editServer(s = {}) {
 function syncFormType() {
   const f = $('#serverForm');
   const rdp = f.elements.type.value === 'rdp';
+  const saved = !!f.elements.userId.value;
   f.querySelectorAll('.rdp-only').forEach(x => (x.hidden = !rdp));
   f.querySelectorAll('.ssh-only').forEach(x => (x.hidden = rdp));
-  f.elements.username.required = !rdp; // RDP can prompt for the user
+  f.querySelectorAll('.own-cred').forEach(x => (x.hidden = saved || (rdp && x.classList.contains('ssh-only'))));
+  f.querySelector('.saved-user').hidden = !saved;
+  f.elements.username.required = !rdp && !saved; // RDP can prompt for the user
   const port = f.elements.port;
   if (rdp && port.value === '22') port.value = '3389';
   if (!rdp && port.value === '3389') port.value = '22';
 }
 $('#serverForm').elements.type.onchange = syncFormType;
+$('#serverForm').elements.userId.onchange = syncFormType;
+// Picking a suggested username that belongs to a saved user links that user (and its password).
+$('#serverForm').elements.username.onchange = () => {
+  const f = $('#serverForm');
+  const u = users.find(x => x.username === f.elements.username.value);
+  if (u && users.filter(x => x.username === u.username).length === 1) { f.elements.userId.value = u.id; syncFormType(); }
+};
 
 $('#serverDlg').addEventListener('close', async () => {
   if ($('#serverDlg').returnValue !== 'save') return;
   const e = $('#serverForm').elements;
   await api.servers.save({
     id: e.id.value || undefined, type: e.type.value, domain: e.domain.value.trim(),
-    name: e.name.value, host: e.host.value, port: e.port.value,
-    username: e.username.value, keyPath: e.keyPath.value.trim(), password: e.password.value,
+    name: e.name.value, host: e.host.value, port: e.port.value, group: e.group.value, userId: e.userId.value,
+    username: e.username.value, keyPath: e.keyPath.value.trim(), password: e.userId.value ? '' : e.password.value,
     tags: e.tags.value.split(',').map(t => t.trim()).filter(Boolean), starred: e.starred.checked,
   });
   refreshServers();
@@ -168,10 +245,59 @@ async function deleteServer(s) {
   refreshServers();
 }
 
-$('#addBtn').onclick = () => editServer();
+$('#addBtn').onclick = () => editServer({ group: modeGroup() && modeGroup() !== UNGROUPED ? modeGroup() : '' });
 $('#filter').oninput = renderServers;
-$('#navAll').onclick = () => { favOnly = false; $('#navAll').classList.add('active'); $('#navFav').classList.remove('active'); renderServers(); };
-$('#navFav').onclick = () => { favOnly = true; $('#navFav').classList.add('active'); $('#navAll').classList.remove('active'); renderServers(); };
+$('#navAll').onclick = () => setMode('all');
+$('#navFav').onclick = () => setMode('fav');
+$('#navUsers').onclick = () => setMode('users');
+
+// ---- users (saved credentials) ----
+function renderUsers() {
+  $('#usersBadge').textContent = `${users.length} user${users.length === 1 ? '' : 's'}`;
+  $('#emptyUsers').hidden = users.length > 0;
+  $('#userRows').replaceChildren(...users.map(u => {
+    const usedBy = servers.filter(x => x.userId === u.id).map(x => x.name);
+    return el('tr', {},
+      el('td', {}, el('b', { textContent: u.label })),
+      el('td', { className: 'mono', textContent: u.username }),
+      el('td', {}, ...[u.hasPassword && 'Password', u.keyPath && 'Key'].filter(Boolean).map(t => el('span', { className: 'tag', textContent: t })),
+        !u.hasPassword && !u.keyPath ? el('span', { className: 'muted', textContent: 'SSH agent / prompt' }) : null),
+      el('td', { className: 'muted', textContent: usedBy.join(', ') || '—', title: usedBy.join('\n') }),
+      el('td', { className: 'r actions' },
+        iconBtn('✎', 'Edit', () => editUser(u)),
+        iconBtn('🗑', 'Delete', () => deleteUser(u, usedBy), 'icon danger')));
+  }));
+}
+
+function editUser(u = {}) {
+  const f = $('#userForm');
+  f.reset();
+  for (const k of ['id', 'label', 'username', 'keyPath']) f.elements[k].value = u[k] || '';
+  f.elements.password.placeholder = u.hasPassword ? 'leave blank to keep the saved one' : 'optional';
+  f.elements.clearPassword.parentElement.hidden = !u.hasPassword;
+  $('#userDlg').returnValue = '';
+  $('#userDlg').showModal();
+}
+$('#userDlg').addEventListener('close', async () => {
+  if ($('#userDlg').returnValue !== 'save') return;
+  const e = $('#userForm').elements;
+  try {
+    await api.users.save({
+      id: e.id.value || undefined, label: e.label.value, username: e.username.value,
+      password: e.password.value, keyPath: e.keyPath.value, clearPassword: e.clearPassword.checked,
+    });
+  } catch (err) { toast(cleanErr(err), true); }
+  refreshServers();
+});
+async function deleteUser(u, usedBy) {
+  const msg = usedBy.length
+    ? `Delete user "${u.label}"? ${usedBy.length} server(s) use it (${usedBy.join(', ')}) and will need their own login.`
+    : `Delete user "${u.label}"?`;
+  if (!confirm(msg)) return;
+  await api.users.delete(u.id);
+  refreshServers();
+}
+$('#addUserBtn').onclick = () => editUser();
 
 // ================= settings =================
 $('#settingsBtn').onclick = async () => {
@@ -195,7 +321,32 @@ api.ssh.onClosed(id => {
   shellsById.delete(id);
 });
 
-function makeTerm(host, connId, cwd) {
+// ---- command suggestions: per-server history (this browser only) + common commands ----
+const COMMON_CMDS = [
+  'ls -la', 'ls -lah', 'cd ..', 'pwd', 'df -h', 'du -sh *', 'free -h', 'top', 'htop', 'uptime', 'whoami', 'uname -a',
+  'ps aux', 'ps aux | grep ', 'kill -9 ', 'tail -f ', 'tail -n 100 ', 'less ', 'cat ', 'grep -rn ', 'find . -name ',
+  'systemctl status ', 'systemctl restart ', 'journalctl -xe', 'journalctl -u ', 'sudo -i', 'sudo ',
+  'docker ps', 'docker ps -a', 'docker logs -f ', 'docker exec -it ', 'docker compose up -d', 'docker compose logs -f',
+  'ss -tulpn', 'netstat -an', 'ip addr', 'ping ', 'curl -I ', 'git status', 'git log --oneline -20', 'git pull',
+  'chmod +x ', 'chown -R ', 'mkdir -p ', 'rm -rf ', 'cp -r ', 'mv ', 'tar czf ', 'tar xzf ', 'history | tail -50', 'clear', 'exit',
+];
+const HIST_MAX = 500;
+const histCache = new Map();
+function getHist(serverId) {
+  if (!histCache.has(serverId)) {
+    let h = [];
+    try { h = JSON.parse(localStorage.getItem('hist:' + serverId)) || []; } catch { /* no storage: session-only history */ }
+    histCache.set(serverId, h);
+  }
+  return histCache.get(serverId);
+}
+function pushHist(serverId, cmd) {
+  const h = [cmd, ...getHist(serverId).filter(x => x !== cmd)].slice(0, HIST_MAX);
+  histCache.set(serverId, h);
+  try { localStorage.setItem('hist:' + serverId, JSON.stringify(h)); } catch { /* ignore */ }
+}
+
+function makeTerm(host, connId, cwd, serverId) {
   const term = new Terminal({
     cursorBlink: true, fontSize: 13, fontFamily: 'Menlo, monospace',
     theme: { background: '#0b0d10', cursor: '#3ddc5f', selectionBackground: '#3ddc5f55' },
@@ -208,13 +359,95 @@ function makeTerm(host, connId, cwd) {
   const ro = new ResizeObserver(refit); // handles window resize and hidden->shown
   ro.observe(host);
   refit();
+
+  // We only know what the user typed since the last Enter; anything that moves the cursor
+  // (arrows, shell Tab-completion, Ctrl-keys) makes that unknowable, so tracking stops until Enter.
+  // Suggestions show only when the screen line really ends with what we tracked: that also hides
+  // them at password prompts (no echo), and keeps unechoed input out of history.
+  const sug = { line: '', lost: false, echoed: false, items: [], idx: 0, box: el('div', { className: 'suggest', hidden: true }) };
+  host.append(sug.box);
+  const cursorLine = () => {
+    const b = term.buffer.active;
+    return b.getLine(b.baseY + b.cursorY)?.translateToString(true) || '';
+  };
+  const hide = () => { sug.box.hidden = true; sug.items = []; };
+  function refresh() {
+    const typed = sug.line;
+    if (sug.lost || typed.trim().length < 1 || term.buffer.active.type === 'alternate') return hide();
+    if (!cursorLine().trimEnd().endsWith(typed.trimEnd())) return hide();
+    sug.echoed = true; // the shell echoes this line, so it's not a password prompt
+    const seen = new Set();
+    sug.items = [...getHist(serverId), ...COMMON_CMDS]
+      .filter(c => c.startsWith(typed) && c !== typed && !seen.has(c) && seen.add(c))
+      .slice(0, 6);
+    if (!sug.items.length) return hide();
+    sug.idx = 0;
+    render();
+  }
+  function render() {
+    sug.box.replaceChildren(
+      ...sug.items.map((c, i) => el('div', {
+        className: 'sitem' + (i === sug.idx ? ' active' : ''),
+        onmousedown: e => { e.preventDefault(); sug.idx = i; accept(); },
+      }, el('b', { textContent: sug.line }), el('span', { textContent: c.slice(sug.line.length) }))),
+      el('div', { className: 'shint', textContent: 'Tab accept · ↑↓ choose · Esc close' }));
+    sug.box.hidden = false;
+    // place under (or above, near the bottom) the start of the typed text
+    const screen = term.element.querySelector('.xterm-screen');
+    const hr = host.getBoundingClientRect(), sr = screen.getBoundingClientRect();
+    const cw = sr.width / term.cols, ch = sr.height / term.rows;
+    const b = term.buffer.active;
+    sug.box.style.left = `${sr.left - hr.left + Math.max(0, b.cursorX - sug.line.length) * cw}px`;
+    const y = sr.top - hr.top + b.cursorY * ch;
+    if (b.cursorY > term.rows / 2) { sug.box.style.top = ''; sug.box.style.bottom = `${hr.height - y + 2}px`; }
+    else { sug.box.style.bottom = ''; sug.box.style.top = `${y + ch + 2}px`; }
+  }
+  function accept() {
+    const rest = sug.items[sug.idx]?.slice(sug.line.length);
+    if (rest && t.id) { api.ssh.write(t.id, rest); sug.line += rest; }
+    hide();
+  }
+  function track(d) {
+    if (d === '\r') {
+      const cmd = sug.line.trim();
+      if (cmd && !sug.lost) {
+        if (sug.echoed) pushHist(serverId, cmd);
+        else { // Enter beat the echo (paste + Enter, slow link): look at that screen row once it's drawn
+          const b = term.buffer.active, row = b.baseY + b.cursorY;
+          setTimeout(() => { if (b.getLine(row)?.translateToString(true).includes(cmd)) pushHist(serverId, cmd); }, 500);
+        }
+      }
+      sug.line = ''; sug.lost = false; sug.echoed = false;
+      return hide();
+    }
+    if (d === '\x7f' || d === '\b') sug.line = sug.line.slice(0, -1);
+    else if (d === '\x03' || d === '\x15') { sug.line = ''; sug.lost = false; sug.echoed = false; } // Ctrl-C / Ctrl-U clear the line
+    else if (/^[^\x00-\x1f\x7f]+$/.test(d)) sug.line += d;                    // typed or pasted text
+    else { sug.lost = true; return hide(); }                                  // arrows, Tab, other control keys
+    setTimeout(refresh); // in case the echo was already drawn before we updated the line
+  }
+  term.attachCustomKeyEventHandler(e => {
+    if (sug.box.hidden || e.type !== 'keydown') return true;
+    if (e.key === 'Tab') { e.preventDefault(); accept(); return false; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      sug.idx = (sug.idx + (e.key === 'ArrowDown' ? 1 : -1) + sug.items.length) % sug.items.length;
+      render();
+      return false;
+    }
+    if (e.key === 'Escape') { hide(); return false; }
+    return true;
+  });
+  term.onWriteParsed(() => { if (sug.line) refresh(); }); // re-check after the shell echoes
+  term.onScroll(hide);
+
   t.ready = api.ssh.shell(connId, term.cols, term.rows, cwd).then(id => {
     t.id = id;
     shellsById.set(id, t);
-    term.onData(d => api.ssh.write(id, d));
+    term.onData(d => { track(d); api.ssh.write(id, d); }); // track first: Enter must see the line before the echo
     term.onResize(({ cols, rows }) => api.ssh.resize(id, cols, rows));
     api.ssh.resize(id, term.cols, term.rows); // size may have changed while the shell was opening
   }, e => term.writeln(`\x1b[31m${cleanErr(e)}\x1b[0m`));
+  t.run = async cmd => { await t.ready; if (t.id) api.ssh.write(t.id, cmd); };
   t.dispose = () => {
     ro.disconnect();
     if (t.id) { api.ssh.closeShell(t.id); shellsById.delete(t.id); }
@@ -261,25 +494,157 @@ async function openServer(s) {
   const setStatus = (text, cls) => { q('.status').textContent = text; q('.status').className = 'status ' + cls; };
 
   // ---- side menu ----
-  let mainTerm = null;
   function pickPanel(name) {
     v.panel = name;
     root.querySelectorAll('.panel').forEach(p => (p.hidden = !p.classList.contains(name)));
     root.querySelectorAll('.srvbody > .side .navitem').forEach(b => b.classList.toggle('active', b.dataset.panel === name));
+    if (name === 'deploy') v.deploy ||= initDeployments(q('.panel.deploy'), s); // own connections; works while disconnected
     if (!v.connId) return;
     if (name === 'term') {
-      mainTerm ||= makeTerm(q('.xhost.main'), v.connId);
-      requestAnimationFrame(() => mainTerm.term.focus());
+      if (!sessions.length && !v.termOpened) newSession();
+      v.termOpened = true;
+      requestAnimationFrame(() => active?.t.term.focus());
     }
     if (name === 'files' && !fm.loaded) loadDir('');
   }
   root.querySelectorAll('.srvbody > .side .navitem').forEach(b => (b.onclick = () => pickPanel(b.dataset.panel)));
 
-  async function openInTerminal(dir) {
-    pickPanel('term');
-    await mainTerm.ready;
-    if (mainTerm.id) api.ssh.write(mainTerm.id, `cd ${shq(dir)}\r`);
+  // ---- terminal sessions (tabs) ----
+  const sessions = [];
+  let active = null, sessNo = 0;
+
+  function newSession(cwd) {
+    if (!v.connId) return null;
+    const host = el('div', { className: 'xhost' });
+    q('.thosts').append(host);
+    const sess = { host, title: `Session ${++sessNo}` };
+    const titleEl = el('span', { className: 'ttitle', textContent: sess.title, title: 'Double-click to rename' });
+    titleEl.ondblclick = e => { e.stopPropagation(); renameSession(sess, titleEl); };
+    sess.tabEl = el('div', { className: 'ttab', onclick: () => activateSession(sess) },
+      el('span', { className: 'tdot' }), titleEl,
+      iconBtn('×', 'Close session', () => closeSession(sess), 'x'));
+    q('.ttablist').append(sess.tabEl);
+    sess.t = makeTerm(host, v.connId, cwd, s.id);
+    sessions.push(sess);
+    activateSession(sess);
+    return sess;
   }
+
+  function activateSession(sess) {
+    active = sess;
+    for (const x of sessions) {
+      x.host.hidden = x !== sess;
+      x.tabEl.classList.toggle('active', x === sess);
+    }
+    q('.tempty').hidden = sessions.length > 0;
+    if (sess) requestAnimationFrame(() => sess.t.term.focus());
+  }
+
+  function closeSession(sess) {
+    sess.t.dispose();
+    sess.host.remove();
+    sess.tabEl.remove();
+    sessions.splice(sessions.indexOf(sess), 1);
+    if (active === sess) activateSession(sessions[sessions.length - 1] || null);
+    q('.tempty').hidden = sessions.length > 0;
+  }
+
+  function renameSession(sess, titleEl) {
+    const inp = el('input', { className: 'trename', value: sess.title });
+    titleEl.replaceWith(inp);
+    inp.focus(); inp.select();
+    let done = false;
+    const finish = save => {
+      if (done) return;
+      done = true;
+      if (save && inp.value.trim()) sess.title = inp.value.trim();
+      titleEl.textContent = sess.title;
+      inp.replaceWith(titleEl);
+      sess.t.term.focus();
+    };
+    inp.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); };
+    inp.onblur = () => finish(true);
+    inp.onclick = e => e.stopPropagation();
+  }
+
+  // run text in the active session (open one if none)
+  async function runInTerminal(cmd) {
+    pickPanel('term');
+    const sess = active || newSession();
+    if (!sess) return;
+    await sess.t.run(cmd);
+    sess.t.term.focus();
+  }
+  const openInTerminal = dir => runInTerminal(`cd ${shq(dir)}\r`);
+
+  q('.tnew').onclick = () => newSession();
+
+  // ---- scripts side panel ----
+  let scripts = [];
+  async function loadScripts() {
+    try { scripts = await api.scripts.list(); } catch (e) { toast(cleanErr(e), true); }
+    renderScripts();
+  }
+  function renderScripts() {
+    const f = q('.sc-filter').value.toLowerCase();
+    const list = scripts.filter(x => !f || `${x.name} ${x.description} ${x.command}`.toLowerCase().includes(f));
+    q('.sc-list').replaceChildren(...list.map(x => el('li', { title: x.command },
+      el('div', { className: 'sc-head' },
+        el('b', { textContent: x.name }),
+        x.builtin ? el('span', { className: 'tag', textContent: 'built-in' }) : null,
+        el('span', { className: 'grow' }),
+        x.builtin ? null : iconBtn('✎', 'Edit', () => editScript(x)),
+        x.builtin ? null : iconBtn('🗑', 'Delete', () => deleteScript(x), 'icon danger'),
+        iconBtn('▶ Run', 'Run in the active terminal session', () => runScript(x), 'primary sm')),
+      x.description ? el('small', { textContent: x.description }) : null,
+      el('code', { className: 'mono', textContent: x.command.split('\n')[0] + (x.command.includes('\n') ? ' …' : '') }))));
+  }
+  function runScript(x) {
+    const body = x.command.replace(/\r\n/g, '\n').trimEnd();
+    if (!body.includes('\n')) return runInTerminal(body + '\r');
+    // multi-line: feed through a heredoc so blocks/functions run as one script
+    const interp = body.startsWith('#!') ? body.slice(2, body.indexOf('\n')).trim() : 'sh';
+    runInTerminal(`${interp} -s <<'ERATERM_SCRIPT'\r${body.replace(/\n/g, '\r')}\rERATERM_SCRIPT\r`);
+  }
+  function editScript(x = {}) {
+    const f = $('#scriptForm');
+    f.reset();
+    for (const k of ['id', 'name', 'description', 'command']) f.elements[k].value = x[k] || '';
+    const dlg = $('#scriptDlg');
+    dlg.returnValue = '';
+    dlg.showModal();
+    dlg.addEventListener('close', async () => {
+      if (dlg.returnValue !== 'save') return;
+      const e = f.elements;
+      try {
+        await api.scripts.save({ id: e.id.value || undefined, name: e.name.value, description: e.description.value, command: e.command.value });
+        loadScripts();
+      } catch (err) { toast(cleanErr(err), true); }
+    }, { once: true });
+  }
+  async function deleteScript(x) {
+    if (!confirm(`Delete script "${x.name}"?`)) return;
+    await api.scripts.delete(x.id);
+    loadScripts();
+  }
+  q('.tscripts').onclick = () => {
+    const p = q('.scripts');
+    p.hidden = !p.hidden;
+    q('.tscripts').classList.toggle('on', !p.hidden);
+    if (!p.hidden) loadScripts();
+  };
+  q('.sc-close').onclick = () => { q('.scripts').hidden = true; q('.tscripts').classList.remove('on'); };
+  q('.sc-refresh').onclick = loadScripts;
+  q('.sc-add').onclick = () => editScript();
+  q('.sc-filter').oninput = renderScripts;
+  q('.sc-up').onclick = async () => {
+    try { const n = await api.scripts.import(); if (n) toast(`Imported ${n} script${n === 1 ? '' : 's'}`); loadScripts(); }
+    catch (e) { toast(`Import failed: ${cleanErr(e)}`, true); }
+  };
+  q('.sc-down').onclick = async () => {
+    try { const f = await api.scripts.export(); if (f) toast(`Exported to ${f}`); }
+    catch (e) { toast(cleanErr(e), true); }
+  };
 
   // ---- side terminal (inside file manager) ----
   let sideTerm = null;
@@ -287,7 +652,7 @@ async function openServer(s) {
     sideTerm?.dispose();
     q('.sidepane').hidden = false;
     q('.sidetitle').textContent = dir;
-    sideTerm = makeTerm(q('.sidepane .xhost'), v.connId, dir);
+    sideTerm = makeTerm(q('.sidepane .xhost'), v.connId, dir, s.id);
     requestAnimationFrame(() => sideTerm.term.focus());
   }
   q('.sideclose').onclick = () => { sideTerm?.dispose(); sideTerm = null; q('.sidepane').hidden = true; };
@@ -517,11 +882,10 @@ async function openServer(s) {
   };
   q('.aiApprove').onclick = () => {
     const cmd = q('.aiCmd').value.trim();
-    if (!cmd || !mainTerm?.id) return;
-    api.ssh.write(mainTerm.id, cmd + '\r');
+    if (!cmd) return;
+    runInTerminal(cmd + '\r');
     q('.aiResult').hidden = true;
     q('.aiInput').value = '';
-    mainTerm.term.focus();
   };
   q('.aiCancel').onclick = () => { q('.aiResult').hidden = true; };
 
@@ -530,17 +894,18 @@ async function openServer(s) {
   v.pollMetrics = async () => {
     try {
       const m = await api.ssh.metrics(v.connId);
+      const pct = (u, t) => Math.round((u / t) * 100) + '%';
       q('.mCpu').textContent = m.cpu == null ? '—' : m.cpu + '%';
-      if (m.memTotal) q('.mMem').textContent = `${gb(m.memUsed)}/${gb(m.memTotal)}`;
+      if (m.memTotal) q('.mMem').textContent = `${pct(m.memUsed, m.memTotal)} (${gb(m.memUsed)}/${gb(m.memTotal)})`;
       if (m.diskTotal) {
-        q('.mDisk').textContent = `${gb(m.diskUsed)}/${gb(m.diskTotal)}`;
-        q('.fdisk').textContent = `Disk ${gb(m.diskUsed)} / ${gb(m.diskTotal)} (${Math.round(m.diskUsed / m.diskTotal * 100)}%)`;
+        q('.mDisk').textContent = `${pct(m.diskUsed, m.diskTotal)} (${gb(m.diskUsed)}/${gb(m.diskTotal)})`;
+        q('.fdisk').textContent = `Disk ${gb(m.diskUsed)} / ${gb(m.diskTotal)} (${pct(m.diskUsed, m.diskTotal)})`;
       }
-    } catch { /* non-Linux server: leave dashes */ }
+    } catch { /* unsupported OS (e.g. Windows): leave dashes */ }
   };
 
   // ---- lifecycle ----
-  v.onShow = () => { if (v.panel === 'term') mainTerm?.term.focus(); };
+  v.onShow = () => { if (v.panel === 'term') active?.t.term.focus(); };
   v.disconnected = msg => {
     v.connId = null;
     stopTail();
@@ -550,7 +915,7 @@ async function openServer(s) {
   v.dispose = () => {
     stopTail();
     sideTerm?.dispose();
-    mainTerm?.dispose();
+    for (const x of [...sessions]) closeSession(x);
     if (v.connId) api.ssh.disconnect(v.connId);
     v.connId = null;
     root.remove();

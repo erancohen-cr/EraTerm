@@ -7,7 +7,8 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { StringDecoder } = require('node:string_decoder');
 const { METRICS_CMD, parseMetrics } = require('./metrics');
-const { shq, buildRdp } = require('./util');
+const { shq, buildRdp, remoteDir } = require('./util');
+const { runDeployment } = require('./deploy');
 
 const AI_MODEL = 'claude-sonnet-5-5';
 const rpath = path.posix;
@@ -46,8 +47,41 @@ const getConn = id => {
 
 // ---------- servers ----------
 // Renderer never sees stored secrets: passwordEnc stays in main.
-const publicServer = ({ passwordEnc, ...s }) => ({ ...s, hasPassword: !!passwordEnc });
 const servers = () => readJson('servers.json', []);
+
+// ---------- users (saved credentials, shared by many servers) ----------
+const users = () => readJson('users.json', []);
+const publicUser = ({ passwordEnc, ...u }) => ({ ...u, hasPassword: !!passwordEnc });
+// A server linked to a saved user takes its username/password/key from it.
+const withCreds = s => {
+  const u = s?.userId && users().find(x => x.id === s.userId);
+  return u ? { ...s, username: u.username, passwordEnc: u.passwordEnc, keyPath: s.type === 'rdp' ? '' : u.keyPath } : s;
+};
+const publicServer = s => {
+  const { passwordEnc, ...rest } = withCreds(s);
+  const u = s.userId && users().find(x => x.id === s.userId);
+  return { ...rest, hasPassword: !!passwordEnc, userLabel: u ? u.label : '' };
+};
+
+ipcMain.handle('users:list', () => users().map(publicUser));
+ipcMain.handle('users:save', (_e, u) => {
+  const list = users();
+  const prev = list.find(x => x.id === u.id);
+  if (!String(u.username || '').trim()) throw new Error('Username is required');
+  const rec = {
+    id: u.id || crypto.randomUUID(),
+    label: String(u.label || u.username).trim(), username: String(u.username).trim(),
+    keyPath: String(u.keyPath || '').trim(),
+    passwordEnc: u.clearPassword ? '' : u.password ? enc(u.password) : prev?.passwordEnc || '',
+  };
+  writeJson('users.json', prev ? list.map(x => (x.id === rec.id ? rec : x)) : [...list, rec]);
+  return publicUser(rec);
+});
+ipcMain.handle('users:delete', (_e, id) => {
+  writeJson('users.json', users().filter(x => x.id !== id));
+  // servers that used it fall back to their own (empty) credentials
+  writeJson('servers.json', servers().map(x => (x.userId === id ? { ...x, userId: '' } : x)));
+});
 const patchServer = (id, patch) => writeJson('servers.json', servers().map(x => (x.id === id ? { ...x, ...patch } : x)));
 
 ipcMain.handle('servers:list', () => servers().map(publicServer));
@@ -60,9 +94,11 @@ ipcMain.handle('servers:save', (_e, s) => {
     ...prev, // keeps lastSeen, logPaths
     id: s.id || crypto.randomUUID(), type,
     name: String(s.name || s.host), host: String(s.host), port: Number(s.port) || (type === 'rdp' ? 3389 : 22),
-    username: String(s.username || ''), domain: type === 'rdp' ? String(s.domain || '') : '',
+    username: s.userId ? prev?.username || '' : String(s.username || ''), domain: type === 'rdp' ? String(s.domain || '') : '',
     keyPath: type === 'ssh' ? s.keyPath || '' : '',
     tags: Array.isArray(s.tags) ? s.tags : [], starred: !!s.starred,
+    group: String(s.group || '').trim().slice(0, 100),
+    userId: s.userId && users().some(u => u.id === s.userId) ? s.userId : '',
     passwordEnc: s.password ? enc(s.password) : prev?.passwordEnc || '',
   };
   writeJson('servers.json', prev ? list.map(x => (x.id === rec.id ? rec : x)) : [...list, rec]);
@@ -104,8 +140,9 @@ const exec = (conn, cmd, check = false) => new Promise((resolve, reject) => {
   });
 });
 
-ipcMain.handle('ssh:connect', (_e, serverId) => new Promise((resolve, reject) => {
-  const s = servers().find(x => x.id === serverId);
+// Opens a registered connection (used by server pages and deployments).
+const openConn = serverId => new Promise((resolve, reject) => {
+  const s = withCreds(servers().find(x => x.id === serverId));
   if (!s) return reject(new Error('Server not found'));
   const connId = crypto.randomUUID();
   const conn = new Client();
@@ -146,7 +183,8 @@ ipcMain.handle('ssh:connect', (_e, serverId) => new Promise((resolve, reject) =>
     if (c && conns.delete(connId)) send('ssh:connClosed', connId, c.err);
   });
   conn.connect(cfg);
-}));
+});
+ipcMain.handle('ssh:connect', (_e, serverId) => openConn(serverId));
 
 ipcMain.on('ssh:disconnect', (_e, connId) => conns.get(connId)?.conn.end());
 
@@ -168,7 +206,7 @@ ipcMain.handle('ssh:metrics', async (_e, connId) => parseMetrics(await exec(getC
 
 // ---------- RDP (hands off to the OS RDP client: Windows App on macOS, mstsc on Windows) ----------
 ipcMain.handle('rdp:open', async (_e, serverId) => {
-  const s = servers().find(x => x.id === serverId);
+  const s = withCreds(servers().find(x => x.id === serverId));
   if (!s) throw new Error('Server not found');
   const dir = dataFile('rdp');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -187,6 +225,74 @@ ipcMain.handle('rdp:open', async (_e, serverId) => {
   clipboard.writeText(pw);
   setTimeout(() => { if (clipboard.readText() === pw) clipboard.clear(); }, 45000);
   return { copied: true };
+});
+
+// ---------- scripts (built-in + user, run through the terminal) ----------
+const BUILTIN_SCRIPTS = [
+  ['System overview', 'Kernel, uptime, load, disk and memory', 'uname -a; uptime; df -h; (free -h 2>/dev/null || vm_stat)'],
+  ['Top CPU processes', '15 processes using the most CPU', 'ps aux | sort -nrk 3 | head -15'],
+  ['Top memory processes', '15 processes using the most memory', 'ps aux | sort -nrk 4 | head -15'],
+  ['Disk usage', 'Mounted filesystems, human readable', 'df -h'],
+  ['Largest items here', 'Biggest files/folders in the current directory', 'du -sh ./* ./.[!.]* 2>/dev/null | sort -rh | head -20'],
+  ['Large files (>100MB)', 'Files over 100MB under the current directory', 'find . -xdev -type f -size +100M -exec ls -lh {} + 2>/dev/null | sort -k5 -rh | head -20'],
+  ['Listening ports', 'Open TCP/UDP listeners', '(ss -tulpn 2>/dev/null || netstat -an | grep -i listen)'],
+  ['Network interfaces', 'Addresses per interface', '(ip -br addr 2>/dev/null || ifconfig)'],
+  ['Logged-in users', 'Who is on and what they run', 'w'],
+  ['Failed services', 'systemd units in failed state (Linux)', 'systemctl --failed --no-pager'],
+  ['Recent errors', 'Last 50 error-level journal entries (Linux)', 'journalctl -p err -n 50 --no-pager'],
+  ['Docker containers', 'All containers with status', 'docker ps -a'],
+].map(([name, description, command], i) => ({ id: `builtin-${i}`, name, description, command, builtin: true }));
+
+const userScripts = () => readJson('scripts.json', []);
+const cleanScript = sc => ({
+  id: sc.id && !String(sc.id).startsWith('builtin-') ? String(sc.id) : crypto.randomUUID(),
+  name: String(sc.name || 'Untitled').slice(0, 200),
+  description: String(sc.description || '').slice(0, 500),
+  command: String(sc.command || ''),
+});
+
+ipcMain.handle('scripts:list', () => [...BUILTIN_SCRIPTS, ...userScripts()]);
+ipcMain.handle('scripts:save', (_e, sc) => {
+  if (!String(sc.command || '').trim()) throw new Error('Script is empty');
+  const rec = cleanScript(sc);
+  const list = userScripts();
+  writeJson('scripts.json', list.some(x => x.id === rec.id) ? list.map(x => (x.id === rec.id ? rec : x)) : [...list, rec]);
+  return rec;
+});
+ipcMain.handle('scripts:delete', (_e, id) => writeJson('scripts.json', userScripts().filter(x => x.id !== id)));
+
+// Import: an exported .json, or .sh/.txt files (one script each, named after the file).
+ipcMain.handle('scripts:import', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Scripts', extensions: ['json', 'sh', 'bash', 'zsh', 'txt'] }],
+  });
+  if (r.canceled) return 0;
+  const added = [];
+  for (const f of r.filePaths) {
+    const text = fs.readFileSync(f, 'utf8');
+    if (f.endsWith('.json')) {
+      const data = JSON.parse(text);
+      const arr = Array.isArray(data) ? data : data.scripts;
+      if (!Array.isArray(arr)) throw new Error(`${path.basename(f)}: expected a list of scripts`);
+      added.push(...arr.filter(x => x && x.command).map(x => cleanScript({ ...x, id: null })));
+    } else {
+      added.push(cleanScript({ name: path.basename(f).replace(/\.[^.]+$/, ''), command: text }));
+    }
+  }
+  writeJson('scripts.json', [...userScripts(), ...added]);
+  return added.length;
+});
+
+ipcMain.handle('scripts:export', async () => {
+  const list = userScripts();
+  if (!list.length) throw new Error('No custom scripts to export yet. Add one with +.');
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    defaultPath: path.join(app.getPath('downloads'), 'eraterm-scripts.json'),
+  });
+  if (canceled) return null;
+  fs.writeFileSync(filePath, JSON.stringify(list.map(({ id, ...x }) => x), null, 2));
+  return filePath;
 });
 
 // ---------- files (SFTP) ----------
@@ -247,8 +353,11 @@ ipcMain.handle('sftp:download', async (_e, connId, remote, isDir) => {
   return filePath;
 });
 
-const tarUpload = (conn, local, remoteDir) => new Promise((resolve, reject) => {
-  conn.exec(`tar xzf - -C ${shq(remoteDir)}`, (err, stream) => {
+// Streams a local file or folder as tar.gz into remote `dir` (created if missing; "~/x" allowed).
+const tarUpload = (conn, local, dir) => new Promise((resolve, reject) => {
+  if (!fs.existsSync(local)) return reject(new Error(`Local path not found: ${local}`));
+  const d = remoteDir(dir);
+  conn.exec(`mkdir -p ${d} && tar xzf - -C ${d}`, (err, stream) => {
     if (err) return reject(err);
     const t = spawn('tar', ['czf', '-', '-C', path.dirname(local), path.basename(local)],
       { env: { ...process.env, COPYFILE_DISABLE: '1' } }); // no macOS ._ files
@@ -271,6 +380,78 @@ ipcMain.handle('sftp:upload', async (_e, connId, remoteDir, locals) => {
   }
   return locals.length;
 });
+
+// ---------- deployments ----------
+const deployments = () => readJson('deployments.json', []);
+const cleanDeployment = d => ({
+  id: d.id || crypto.randomUUID(),
+  name: String(d.name || 'Untitled deployment').slice(0, 200),
+  targets: (d.targets || []).map(String),
+  parallel: !!d.parallel,
+  files: (d.files || []).map(f => ({ local: String(f.local), remoteDir: String(f.remoteDir || '') })),
+  stages: Object.fromEntries(['pre', 'deploy', 'post'].map(k => [k, {
+    commands: (d.stages?.[k]?.commands || []).map(String),
+    checks: (d.stages?.[k]?.checks || []).map(c => ({ ...c })),
+  }])),
+});
+
+ipcMain.handle('deploy:list', () => deployments());
+ipcMain.handle('deploy:save', (_e, d) => {
+  const rec = cleanDeployment(d);
+  const list = deployments();
+  writeJson('deployments.json', list.some(x => x.id === rec.id) ? list.map(x => (x.id === rec.id ? rec : x)) : [...list, rec]);
+  return rec;
+});
+ipcMain.handle('deploy:delete', (_e, id) => writeJson('deployments.json', deployments().filter(x => x.id !== id)));
+ipcMain.handle('deploy:pickFiles', async () => {
+  const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'openDirectory', 'multiSelections'] });
+  return r.canceled ? [] : r.filePaths;
+});
+
+// Run a command or multi-line script through `sh -s` (or its #! interpreter), streaming output.
+const runScript = (conn, script, onData) => new Promise((resolve, reject) => {
+  const body = String(script).replace(/\r\n/g, '\n');
+  const nl = body.indexOf('\n');
+  const interp = body.startsWith('#!') ? body.slice(2, nl < 0 ? undefined : nl).trim() : 'sh';
+  conn.exec(`${interp} -s`, (err, stream) => {
+    if (err) return reject(err);
+    const out = d => onData?.(d.toString('utf8'));
+    stream.on('data', out);
+    stream.stderr.on('data', out);
+    stream.on('close', code => resolve({ code: code ?? -1 }));
+    stream.end(body + '\n');
+  });
+});
+
+const deployRuns = new Map(); // runId -> AbortController
+ipcMain.handle('deploy:run', (_e, d) => {
+  const dep = cleanDeployment(d);
+  const all = servers();
+  const targets = dep.targets.map(id => all.find(x => x.id === id)).filter(x => x && x.type !== 'rdp');
+  if (!targets.length) throw new Error('Pick at least one SSH server to deploy to.');
+  const runId = crypto.randomUUID();
+  const ac = new AbortController();
+  deployRuns.set(runId, ac);
+  const io = {
+    emit: ev => send('deploy:event', runId, ev),
+    connect: async t => {
+      const connId = await openConn(t.id);
+      const { conn } = conns.get(connId);
+      const kill = () => conn.end(); // cancel interrupts whatever is running
+      ac.signal.addEventListener('abort', kill);
+      return {
+        exec: (script, onData) => runScript(conn, script, onData),
+        upload: (local, dir) => tarUpload(conn, local, dir),
+        close: () => { ac.signal.removeEventListener('abort', kill); conn.end(); },
+      };
+    },
+  };
+  runDeployment(dep, targets.map(t => ({ id: t.id, name: t.name, host: t.host })), io, ac.signal)
+    .catch(err => send('deploy:event', runId, { kind: 'log', level: 'error', text: err.message }))
+    .finally(() => { deployRuns.delete(runId); send('deploy:event', runId, { kind: 'done' }); });
+  return { runId, targets: targets.map(t => ({ id: t.id, name: t.name, host: t.host })) };
+});
+ipcMain.on('deploy:cancel', (_e, runId) => deployRuns.get(runId)?.abort());
 
 // ---------- logs ----------
 const lineCount = n => Math.min(Math.max(parseInt(n, 10) || 500, 1), 100000);
