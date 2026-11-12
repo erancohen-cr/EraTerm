@@ -1,0 +1,181 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>EraTerm</title>
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav id="tabs"><button id="homeTab" class="tab active">⌂ Home</button></nav>
+
+  <div id="views">
+    <!-- ===== Home ===== -->
+    <section id="home" class="view">
+      <aside class="side">
+        <div class="brand">Era<span>Term</span></div>
+        <button id="addBtn" class="primary wide">＋ New connection</button>
+        <h6>Workspace</h6>
+        <button class="navitem active" id="navAll">▤ All Servers <span class="count" id="navCount"></span></button>
+        <button class="navitem" id="navFav">☆ Favorites</button>
+        <span class="grow"></span>
+        <button class="navitem" id="settingsBtn">⚙ Settings</button>
+      </aside>
+      <div class="content">
+        <header class="pagehead">
+          <h1 id="homeTitle">All Servers</h1><span class="badge" id="countBadge"></span>
+          <span class="grow"></span>
+          <input id="filter" class="search" placeholder="Search servers, IPs, users, tags…">
+        </header>
+        <table class="grid">
+          <thead><tr><th>Server</th><th>Connection</th><th>Tags</th><th>Last seen</th><th class="r">Actions</th></tr></thead>
+          <tbody id="serverRows"></tbody>
+        </table>
+        <p id="emptyHome" class="empty">No servers yet. Click “New connection” to add one.</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===== Server page (cloned per connected server) ===== -->
+  <template id="serverTpl">
+    <section class="view server">
+      <header class="srvhead">
+        <button class="back icon" title="Back to Home">←</button>
+        <div class="srvid"><b class="sname"></b><small class="saddr mono"></small></div>
+        <span class="grow"></span>
+        <span class="metrics mono">CPU <b class="mCpu">—</b> · Mem <b class="mMem">—</b> · Disk <b class="mDisk">—</b></span>
+        <button class="status">CONNECTING…</button>
+      </header>
+      <div class="srvbody">
+        <aside class="side">
+          <button class="navitem" data-panel="files">▭ File Manager</button>
+          <button class="navitem" data-panel="term">›_ Terminal</button>
+          <button class="navitem" data-panel="logs">≡ Logs</button>
+        </aside>
+
+        <!-- File manager -->
+        <div class="panel files" hidden>
+          <div class="fm">
+            <div class="toolbar">
+              <button class="up icon" title="Parent folder">↑</button>
+              <button class="homedir icon" title="Home folder">⌂</button>
+              <input class="path mono grow" spellcheck="false" title="Type a path and press Enter">
+              <button class="refresh icon" title="Refresh">⟳</button>
+            </div>
+            <div class="toolbar">
+              <input class="fsearch search" placeholder="Search this folder…">
+              <label class="chk"><input type="checkbox" class="showhidden"> Show hidden</label>
+              <span class="grow"></span>
+              <button class="mkdir">＋ New folder</button>
+              <button class="upload primary">⤒ Upload</button>
+              <button class="sideterm">›_ Terminal</button>
+            </div>
+            <div class="droparea">
+              <table class="grid">
+                <thead><tr><th>Name</th><th class="r">Size</th><th class="r">Modified</th><th class="r">Actions</th></tr></thead>
+                <tbody class="frows"></tbody>
+              </table>
+              <div class="dropmsg">Drop files or folders to upload here</div>
+            </div>
+            <footer class="statusbar mono"><span class="fstat"></span><span class="grow"></span><span class="fdisk"></span></footer>
+          </div>
+          <div class="sidepane" hidden>
+            <header><span class="sidetitle mono"></span><button class="sideclose icon" title="Close">×</button></header>
+            <div class="xhost"></div>
+          </div>
+        </div>
+
+        <!-- Terminal -->
+        <div class="panel term" hidden>
+          <div class="xhost main"></div>
+          <section class="ai">
+            <form class="aiForm">
+              <input class="aiInput" placeholder="Ask AI: e.g. show the 5 largest files in /var/log" autocomplete="off">
+              <button>Suggest</button>
+            </form>
+            <div class="aiResult" hidden>
+              <label>Command (editable) <span class="aiRisk"></span></label>
+              <input class="aiCmd mono" spellcheck="false">
+              <p class="aiExplain"></p>
+              <button class="aiApprove primary">Approve &amp; run</button>
+              <button class="aiCancel" type="button">Cancel</button>
+            </div>
+            <p class="aiError error"></p>
+          </section>
+        </div>
+
+        <!-- Logs -->
+        <div class="panel logs" hidden>
+          <aside class="logsrc">
+            <h6>Log sources · <span class="lcount">0</span></h6>
+            <input class="lfilter search" placeholder="Search log files…">
+            <ul class="llist"></ul>
+            <form class="ladd"><input class="mono" placeholder="/var/log/syslog" required><button class="primary">＋</button></form>
+          </aside>
+          <div class="lview">
+            <div class="toolbar">
+              <b class="lname">Select a log source</b>
+              <span class="grow"></span>
+              <input class="lsearch search" placeholder="Search logs…">
+              <select class="lmode" title="Search mode">
+                <option value="mark">Highlight matches</option>
+                <option value="filter">Only matching lines</option>
+              </select>
+              <select class="llines" title="Lines to load">
+                <option value="200">200 lines</option><option value="500" selected>500 lines</option>
+                <option value="1000">1000 lines</option><option value="5000">5000 lines</option>
+              </select>
+              <button class="lrefresh icon" title="Reload">⟳</button>
+              <button class="llive" title="Start / stop tailing">● Live</button>
+              <button class="ldl icon" title="Download full log file">⤓</button>
+            </div>
+            <div class="lbody mono"></div>
+            <footer class="statusbar mono"><span class="lpath"></span><span class="grow"></span><span class="lstat"></span></footer>
+          </div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <div id="toast" hidden></div>
+
+  <dialog id="serverDlg">
+    <form method="dialog" id="serverForm">
+      <h3>Server</h3>
+      <input type="hidden" name="id">
+      <label>Name <input name="name"></label>
+      <label>Host <input name="host" required></label>
+      <label>Port <input name="port" type="number" value="22" min="1" max="65535"></label>
+      <label>User <input name="username" required></label>
+      <label>Private key path <input name="keyPath" placeholder="~/.ssh/id_ed25519"></label>
+      <label>Password <input name="password" type="password" placeholder="leave blank to keep / use key or agent"></label>
+      <label>Tags <input name="tags" placeholder="prod, web"></label>
+      <label class="row"><input name="starred" type="checkbox"> Favorite</label>
+      <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="nameDlg">
+    <form method="dialog" id="nameForm">
+      <h3 id="nameTitle"></h3>
+      <input name="name" required autofocus>
+      <menu><button value="cancel" formnovalidate>Cancel</button><button value="ok" class="primary">OK</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDlg">
+    <form method="dialog" id="settingsForm">
+      <h3>Settings</h3>
+      <p id="keyStatus"></p>
+      <label>Anthropic API key <input name="apiKey" type="password" placeholder="sk-ant-…"></label>
+      <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
+    </form>
+  </dialog>
+
+  <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="util.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
