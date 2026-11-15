@@ -61,13 +61,35 @@ function fileKind({ name, type, mode, link }) {
 }
 
 // ---------- AI providers ----------
-// models = suggestions only; any model name can be typed (provider catalogs change often).
+// models = starting suggestions only. Catalogs change often: Settings → "Load models" asks the provider
+// for its current list, and any model name can be typed.
 const AI_PROVIDERS = {
   anthropic: { label: 'Claude (Anthropic)', env: 'ANTHROPIC_API_KEY', models: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'] },
   openai: { label: 'ChatGPT (OpenAI)', env: 'OPENAI_API_KEY', models: ['gpt-5', 'gpt-5-mini'] },
-  gemini: { label: 'Gemini (Google)', env: 'GEMINI_API_KEY', models: ['gemini-2.5-pro', 'gemini-2.5-flash'] },
+  gemini: { label: 'Gemini (Google)', env: 'GEMINI_API_KEY', models: ['gemini-3.1-pro-preview'] },
 };
+// Accept what people paste: surrounding spaces/quotes and Gemini's "models/" prefix.
+const normModel = m => String(m ?? '').trim().replace(/^["']|["']$/g, '').replace(/^models\//, '');
 const validModel = m => /^[\w.:-]{1,80}$/.test(String(m)); // also keeps the Gemini URL path safe
+
+// "List models" request per provider (used to fill the model picker and to test a key).
+function buildModelsRequest(provider, key) {
+  if (provider === 'anthropic') return { url: 'https://api.anthropic.com/v1/models?limit=100', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } };
+  if (provider === 'openai') return { url: 'https://api.openai.com/v1/models', headers: { authorization: `Bearer ${key}` } };
+  if (provider === 'gemini') return { url: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', headers: { 'x-goog-api-key': key } };
+  throw new Error(`Unknown AI provider: ${provider}`);
+}
+// Chat-capable model ids, newest-looking first.
+function parseModels(provider, body) {
+  let ids;
+  if (provider === 'gemini') {
+    ids = (body.models || []).filter(m => (m.supportedGenerationMethods || []).includes('generateContent')).map(m => normModel(m.name));
+  } else {
+    ids = (body.data || []).map(m => m.id);
+    if (provider === 'openai') ids = ids.filter(id => /^(gpt|o\d|chatgpt)/.test(id) && !/(audio|realtime|transcribe|tts|image|search|embedding)/.test(id));
+  }
+  return [...new Set(ids.filter(validModel))].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+}
 
 // One request shape per provider. Reasoning models spend output tokens on thinking, hence the floor.
 function buildAiRequest(provider, { key, model, system, content, maxTokens }) {
@@ -127,5 +149,5 @@ function remoteDir(d) {
 
 if (typeof module !== 'undefined') module.exports = {
   shq, logLevel, parseLogTime, logRowVisible, fileKind, buildRdp, remoteDir,
-  AI_PROVIDERS, validModel, buildAiRequest, parseAiResponse,
+  AI_PROVIDERS, validModel, normModel, buildAiRequest, parseAiResponse, buildModelsRequest, parseModels,
 };

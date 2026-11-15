@@ -76,5 +76,7 @@ contextBridge.exposeInMainWorld('api', {
   ai: {
     suggest: (connId, req) => ipcRenderer.invoke('ai:suggest', connId, req),
     analyze: (connId, a) => ipcRenderer.invoke('ai:analyze', connId, a), // { kind: 'logs'|'terminal', question, text, source }
+    models: a => ipcRenderer.invoke('ai:models', a), // { provider, key? }
+    test: a => ipcRenderer.invoke('ai:test', a),     // { provider, key?, model? }
   },
 });

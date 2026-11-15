@@ -1,7 +1,27 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
-const { shq, logLevel, parseLogTime, logRowVisible, fileKind, buildRdp, remoteDir, buildAiRequest, parseAiResponse } = require('./util');
+const { shq, logLevel, parseLogTime, logRowVisible, fileKind, buildRdp, remoteDir, buildAiRequest, parseAiResponse,
+  normModel, validModel, buildModelsRequest, parseModels } = require('./util');
+
+test('model names: pasted forms are normalized, unsafe ones rejected', () => {
+  assert.strictEqual(normModel(' models/gemini-3.1-pro-preview '), 'gemini-3.1-pro-preview'); // as in Gemini's error text
+  assert.strictEqual(normModel('"gpt-5"'), 'gpt-5');
+  assert.ok(validModel(normModel('models/gemini-3.1-pro-preview')));
+  assert.ok(!validModel(normModel('models/../../x')));
+  assert.ok(!validModel('gpt 5'));
+});
+
+test('model lists per provider', () => {
+  assert.match(buildModelsRequest('gemini', 'K').url, /v1beta\/models/);
+  assert.strictEqual(buildModelsRequest('openai', 'K').headers.authorization, 'Bearer K');
+  assert.deepStrictEqual(parseModels('gemini', { models: [
+    { name: 'models/gemini-3.1-pro-preview', supportedGenerationMethods: ['generateContent'] },
+    { name: 'models/text-embedding-004', supportedGenerationMethods: ['embedContent'] },
+  ] }), ['gemini-3.1-pro-preview']);
+  assert.deepStrictEqual(parseModels('openai', { data: [{ id: 'gpt-5' }, { id: 'whisper-1' }, { id: 'gpt-4o-realtime' }, { id: 'o3' }] }), ['o3', 'gpt-5']);
+  assert.deepStrictEqual(parseModels('anthropic', { data: [{ id: 'claude-sonnet-5-5' }, { id: 'claude-opus-5-5' }] }), ['claude-sonnet-5-5', 'claude-opus-5-5']);
+});
 
 test('AI providers: request shape and response parsing', () => {
   const a = { key: 'K', model: 'm-1', system: 'SYS', content: 'Q', maxTokens: 1000 };

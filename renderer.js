@@ -146,8 +146,55 @@ function renderNav() {
   $('#usernameList').replaceChildren(...users.map(u => el('option', { value: u.username, label: u.label })));
 }
 
+// ---- alerts on the home table ----
+// serverId -> Map(metric -> { val, threshold, since }) for alerts currently above their limit (set by each server page).
+const alertState = new Map();
+const METRIC_NAME = { cpu: 'CPU', mem: 'Memory', disk: 'Disk' };
+const METRIC_ICON = { // same shapes as the Metrics cards
+  cpu: 'M13 2 4 14h7l-1 8 9-12h-7l1-8z',
+  mem: 'M3 8h18v9H3z M7 8V5 M12 8V5 M17 8V5 M7 17v2 M12 17v2 M17 17v2 M7 11.5h3v2H7z M14 11.5h3v2h-3z',
+  disk: 'M5 3h14v18H5z M5 9h14 M5 15h14 M8 6h3 M8 12h3 M8 18h3',
+};
+function metricIcon(k) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'micon m-' + k);
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', METRIC_ICON[k]);
+  svg.append(path);
+  return svg;
+}
+// Red metric icons while an alert is firing; a quiet bell when alerts are set but all is fine.
+// Hover shows what's wrong (or what's watched) and a jump to that server's Metrics tab.
+function alertCell(s) {
+  const firing = alertState.get(s.id);
+  const set = Object.entries(s.alerts || {}).filter(([, a]) => a.on);
+  if (!firing?.size && !set.length) return el('td', { className: 'alertcell' });
+  const lines = firing?.size
+    ? [...firing].map(([k, f]) => el('div', { className: 'aline fire' }, metricIcon(k),
+      el('span', { textContent: `${METRIC_NAME[k]} at ${Math.round(f.val)}% — above your ${f.threshold}% alert · since ${new Date(f.since).toLocaleTimeString()}` })))
+    : [el('div', { className: 'aline', textContent: views.get(s.id)?.connId ? 'All within limits.' : 'Not connected — alerts are checked only while connected.' })];
+  const watched = set.map(([k, a]) => `${METRIC_NAME[k]} > ${a.threshold}%`).join(' · ');
+  return el('td', { className: 'alertcell' },
+    el('span', { className: 'abadge' + (firing?.size ? ' fire' : '') },
+      ...(firing?.size ? [...firing.keys()].map(metricIcon) : [el('span', { className: 'bell', textContent: '🔔' })])),
+    el('div', { className: 'apop' },
+      el('b', { textContent: firing?.size ? `🔔 Alert on ${s.name}` : `Alerts on ${s.name}` }),
+      ...lines,
+      watched ? el('small', { className: 'muted', textContent: `Watching: ${watched}` }) : null,
+      el('button', { className: 'sm primary', textContent: 'Open Metrics →', onclick: e => { e.stopPropagation(); openMetrics(s); } })));
+}
+async function openMetrics(s) {
+  if (!views.has(s.id)) await openServer(s); // connects (alerts only fire on connected servers anyway)
+  const v = views.get(s.id);
+  if (!v) return;
+  show(s.id);
+  v.pickPanel?.('stats');
+}
+
 function serverRow(s) {
-  const tr = el('tr', { className: 'srow' },
+  const tr = el('tr', { className: 'srow' + (alertState.get(s.id)?.size ? ' alerting' : '') },
     el('td', {}, el('span', { className: 'dot' + (views.has(s.id) ? ' on' : '') }), el('b', { textContent: s.name })),
     el('td', {}, el('span', { className: 'proto ' + typeOf(s), textContent: typeOf(s).toUpperCase() })),
     el('td', { className: 'mono', title: s.userLabel ? `Login: saved user "${s.userLabel}"` : '' },
@@ -155,6 +202,7 @@ function serverRow(s) {
       s.userLabel ? el('span', { className: 'ulink', textContent: ' 👤' }) : null),
     el('td', {}, ...s.tags.map(t => el('span', { className: 'tag', textContent: t }))),
     el('td', { className: 'details muted', textContent: s.details || '', title: s.details || '' }),
+    alertCell(s),
     el('td', { className: 'muted', textContent: ago(s.lastSeen) }),
     el('td', { className: 'r actions' },
       iconBtn(s.starred ? '★' : '☆', s.starred ? 'Unfavorite' : 'Favorite', () => toggleStar(s), 'icon' + (s.starred ? ' star' : '')),
@@ -184,7 +232,7 @@ function renderServers() {
     rows.push(el('tr', {
       className: 'grprow' + (shut ? ' shut' : ''),
       onclick: () => { collapsed[collapsed.has(name) ? 'delete' : 'add'](name); saveCollapsed(); renderServers(); },
-    }, el('td', { colSpan: 7 },
+    }, el('td', { colSpan: 8 },
       el('span', { className: 'caret', textContent: shut ? '▸' : '▾' }),
       el('b', { textContent: name }),
       el('span', { className: 'count', textContent: members.length }),
@@ -384,6 +432,7 @@ function showProvider(p) {
   f.apiKey.value = '';
   $('#aiModelList').replaceChildren(...d.models.map(value => el('option', { value })));
   f.aiModel.value = d.model;
+  aiMsg('');
 }
 async function openSettings(focusKey = false) {
   aiSettings = await api.settings.get();
@@ -442,17 +491,54 @@ function showAiError(target, err) {
 // Preview the theme while the dialog is open; Cancel/Esc restores the saved one.
 $('#settingsForm').elements.theme.onchange = e => { document.documentElement.dataset.theme =
   e.target.value === 'system' ? (darkMq.matches ? 'dark' : 'light') : e.target.value; };
-$('#settingsDlg').addEventListener('close', () => {
+// Messages inside the dialog (it no longer closes on a failed save).
+const aiMsg = (text, kind = '') => { $('#aiMsg').textContent = text; $('#aiMsg').className = 'hint ' + kind; };
+const aiNoKeyText = e => cleanErr(e).replace(/^NO_API_KEY:\s*/, '').replace(/\s*(Update it|Add one)? ?in Settings → AI configuration\./, ' Check the key and try again.');
+
+// Save: validate + store first; close only when it worked.
+$('#settingsForm').addEventListener('submit', async e => {
+  if (e.submitter?.value !== 'save') return; // Cancel closes as usual
+  e.preventDefault();
   const f = $('#settingsForm').elements;
-  if ($('#settingsDlg').returnValue === 'save') {
-    try { localStorage.setItem('theme', f.theme.value); } catch { /* ignore */ }
-    api.settings.setAi({
-      provider: f.aiProvider.value, model: f.aiModel.value.trim(),
+  const btn = e.submitter;
+  btn.disabled = true;
+  try {
+    await api.settings.setAi({
+      provider: f.aiProvider.value, model: f.aiModel.value,
       key: f.clearKey.checked ? null : f.apiKey.value.trim(),
-    }).catch(err => toast(cleanErr(err), true));
-  }
-  applyTheme();
+    });
+    try { localStorage.setItem('theme', f.theme.value); } catch { /* ignore */ }
+    $('#settingsDlg').close('save');
+    toast(`Settings saved. AI: ${aiSettings.providers[f.aiProvider.value].label}`);
+  } catch (err) {
+    aiMsg(aiNoKeyText(err), 'error');
+  } finally { btn.disabled = false; }
 });
+$('#settingsDlg').addEventListener('close', applyTheme);
+
+$('#aiLoadModels').onclick = async () => {
+  const f = $('#settingsForm').elements;
+  const btn = $('#aiLoadModels');
+  btn.disabled = true; aiMsg('Loading models…');
+  try {
+    const models = await api.ai.models({ provider: f.aiProvider.value, key: f.apiKey.value });
+    $('#aiModelList').replaceChildren(...models.map(value => el('option', { value })));
+    const cur = f.aiModel.value.trim().replace(/^models\//, '');
+    aiMsg(`${models.length} models available. ` + (models.includes(cur) ? `"${cur}" is one of them ✓`
+      : `"${cur}" is not in the list — click the Model field to pick one.`), models.includes(cur) ? 'ok' : 'warn');
+  } catch (err) { aiMsg(aiNoKeyText(err), 'error'); }
+  finally { btn.disabled = false; }
+};
+$('#aiTest').onclick = async () => {
+  const f = $('#settingsForm').elements;
+  const btn = $('#aiTest');
+  btn.disabled = true; aiMsg('Testing…');
+  try {
+    const r = await api.ai.test({ provider: f.aiProvider.value, key: f.apiKey.value, model: f.aiModel.value });
+    aiMsg(`Works ✓ ${r.model} answered "${r.reply}" in ${(r.ms / 1000).toFixed(1)} s. Click Save to keep it.`, 'ok');
+  } catch (err) { aiMsg(aiNoKeyText(err), 'error'); }
+  finally { btn.disabled = false; }
+};
 
 // ================= terminals =================
 const shellsById = new Map(); // shellId -> terminal wrapper
@@ -638,6 +724,7 @@ async function openServer(s) {
   const setStatus = (text, cls) => { q('.status').textContent = text; q('.status').className = 'status ' + cls; };
 
   // ---- side menu ----
+  v.pickPanel = name => pickPanel(name); // used by "Open Metrics" from the home Alerts column
   function pickPanel(name) {
     v.panel = name;
     root.querySelectorAll('.panel').forEach(p => (p.hidden = !p.classList.contains(name)));
@@ -1246,17 +1333,24 @@ async function openServer(s) {
     }
   }
   function checkAlerts(vals) {
+    const before = JSON.stringify([...(alertState.get(s.id) || new Map()).keys()]);
+    const state = alertState.get(s.id) || new Map();
     for (const k of ['cpu', 'mem', 'disk']) {
       const a = v.alerts[k], val = vals[k];
-      if (!a.on || val == null) { firing[k] = false; continue; }
+      if (!a.on || val == null) { firing[k] = false; state.delete(k); continue; }
       if (val >= a.threshold && !firing[k]) {
         firing[k] = true;
+        state.set(k, { val, threshold: a.threshold, since: Date.now() });
         const msg = `${s.name}: ${KNAME[k]} at ${Math.round(val)}% (alert above ${a.threshold}%)`;
         toast('🔔 ' + msg, true);
         try { new Notification('EranTerm alert', { body: msg }); } catch { /* notifications blocked */ }
-      } else if (val < a.threshold - 5) firing[k] = false;
+      } else if (val < a.threshold - 5) { firing[k] = false; state.delete(k); }
+      else if (firing[k]) state.set(k, { ...state.get(k), val }); // keep the latest value for the tooltip
     }
+    alertState.set(s.id, state);
     renderAlertBtns();
+    // home table: redraw when the set of firing alerts changed (values refresh on the next redraw)
+    if (!$('#home').hidden && JSON.stringify([...state.keys()]) !== before) renderServers();
   }
   for (const k of ['cpu', 'mem', 'disk']) {
     card(k).querySelector('.galert').onclick = async () => {
@@ -1275,6 +1369,9 @@ async function openServer(s) {
       v.alerts = await api.servers.setAlerts(s.id, { ...v.alerts, [k]: { on: on.checked, threshold: th.value } });
       s.alerts = v.alerts;
       firing[k] = false;
+      alertState.get(s.id)?.delete(k);
+      const hs = servers.find(x => x.id === s.id); // keep the home table's copy in step
+      if (hs) hs.alerts = v.alerts;
       renderAlertBtns();
       toast(v.alerts[k].on ? `${KNAME[k]} alert on: above ${v.alerts[k].threshold}%` : `${KNAME[k]} alert off`);
     };
@@ -1435,6 +1532,7 @@ async function openServer(s) {
     if (msg) toast(`${s.name}: ${msg}`, true);
   };
   v.dispose = () => {
+    alertState.delete(s.id);
     clearInterval(statsTimer);
     stopTail();
     sideTerm?.dispose();

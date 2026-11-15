@@ -37,7 +37,7 @@
             <input id="filter" class="search" placeholder="Search servers, IPs, users, tags…">
           </header>
           <table class="grid">
-            <thead><tr><th>Server</th><th>Type</th><th>Connection</th><th>Tags</th><th>Details</th><th>Last seen</th><th class="r">Actions</th></tr></thead>
+            <thead><tr><th>Server</th><th>Type</th><th>Connection</th><th>Tags</th><th>Details</th><th>Alerts</th><th>Last seen</th><th class="r">Actions</th></tr></thead>
             <tbody id="serverRows"></tbody>
           </table>
           <p id="emptyHome" class="empty">No servers yet. Click “New connection” to add one.</p>
@@ -397,8 +397,15 @@
       <p id="keyStatus" class="hint"></p>
       <label><span id="keyLabel">API key</span> <input name="apiKey" type="password" placeholder="leave blank to keep the saved key" autocomplete="off"></label>
       <label class="row"><input name="clearKey" type="checkbox"> Remove the saved key for this provider</label>
-      <label>Model <input name="aiModel" list="aiModelList" spellcheck="false" autocomplete="off"></label>
+      <label>Model
+        <span class="modelrow">
+          <input name="aiModel" list="aiModelList" spellcheck="false" autocomplete="off" placeholder="model id, e.g. gemini-3.1-pro-preview">
+          <button type="button" id="aiLoadModels" title="Ask the provider for its current model list (uses the key above, or the saved one)">↻ Load models</button>
+          <button type="button" id="aiTest" title="Send a tiny test request with this key and model (nothing is saved)">Test</button>
+        </span>
+      </label>
       <datalist id="aiModelList"></datalist>
+      <p id="aiMsg" class="hint"></p>
       <p class="hint">Used by Ask AI in Terminal and Logs. Each provider keeps its own key, encrypted with your macOS Keychain. Logs and terminal text are sent to the selected provider only when you click Ask AI.</p>
       <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
     </form>

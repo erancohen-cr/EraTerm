@@ -454,3 +454,28 @@ dialog select { width: 100%; }
 .aiOutBody { padding: 10px 12px; white-space: pre-wrap; line-height: 1.5; max-height: 38vh; overflow: auto; user-select: text; }
 .aiError button, .laiNote button { margin-left: 6px; }
 dialog .dlgsec { margin: 14px 0 6px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
+.modelrow { display: flex; gap: 6px; }
+.modelrow input { flex: 1; min-width: 0; }
+.modelrow button { white-space: nowrap; }
+#aiMsg:empty { display: none; }
+#aiMsg.ok { color: var(--accent); }
+#aiMsg.warn { color: var(--warn); }
+#aiMsg.error { color: var(--error); }
+#settingsDlg { width: 520px; }
+
+/* ---------- home: Alerts column ---------- */
+.alertcell { position: relative; white-space: nowrap; }
+.abadge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 6px; cursor: default; }
+.abadge .bell { opacity: .45; font-size: 12px; }
+.abadge.fire { background: #f052521f; border: 1px solid #f0525266; animation: apulse 1.6s ease-in-out infinite; }
+.micon { width: 1.15em; height: 1.15em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.abadge.fire .micon { color: var(--error); }
+.apop { display: none; position: absolute; z-index: 20; top: calc(100% - 4px); left: 0; min-width: 300px; max-width: 420px; white-space: normal;
+  background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 10px 28px #0008; padding: 10px 12px; flex-direction: column; gap: 6px; }
+.alertcell:hover .apop, .apop:hover { display: flex; }
+.apop b { font-size: 12px; }
+.aline { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.aline.fire { color: var(--error); }
+.apop button { align-self: flex-start; margin-top: 2px; }
+tr.srow.alerting td:first-child { box-shadow: inset 3px 0 var(--error); }
+@keyframes apulse { 50% { box-shadow: 0 0 0 3px #f0525222; } }
