@@ -130,6 +130,7 @@ function serverRow(s) {
       `${s.username ? s.username + '@' : ''}${s.host}` + (s.port !== defaultPort(s) ? `:${s.port}` : ''),
       s.userLabel ? el('span', { className: 'ulink', textContent: ' 👤' }) : null),
     el('td', {}, ...s.tags.map(t => el('span', { className: 'tag', textContent: t }))),
+    el('td', { className: 'details muted', textContent: s.details || '', title: s.details || '' }),
     el('td', { className: 'muted', textContent: ago(s.lastSeen) }),
     el('td', { className: 'r actions' },
       iconBtn(s.starred ? '★' : '☆', s.starred ? 'Unfavorite' : 'Favorite', () => toggleStar(s), 'icon' + (s.starred ? ' star' : '')),
@@ -147,7 +148,7 @@ function renderServers() {
   const list = servers
     .filter(s => homeMode !== 'fav' || s.starred)
     .filter(s => !g || groupOf(s) === g)
-    .filter(s => !q || [s.name, s.host, s.username, s.group || '', ...s.tags].some(x => x.toLowerCase().includes(q)))
+    .filter(s => !q || [s.name, s.host, s.username, s.group || '', s.details || '', ...s.tags].some(x => x.toLowerCase().includes(q)))
     .sort((a, b) => b.starred - a.starred || a.name.localeCompare(b.name));
   $('#countBadge').textContent = `${list.length} server${list.length === 1 ? '' : 's'}`;
   $('#homeTitle').textContent = g || (homeMode === 'fav' ? 'Favorites' : 'All Servers');
@@ -159,7 +160,7 @@ function renderServers() {
     rows.push(el('tr', {
       className: 'grprow' + (shut ? ' shut' : ''),
       onclick: () => { collapsed[collapsed.has(name) ? 'delete' : 'add'](name); saveCollapsed(); renderServers(); },
-    }, el('td', { colSpan: 6 },
+    }, el('td', { colSpan: 7 },
       el('span', { className: 'caret', textContent: shut ? '▸' : '▾' }),
       el('b', { textContent: name }),
       el('span', { className: 'count', textContent: members.length }),
@@ -222,6 +223,7 @@ function editServer(s = {}) {
   f.elements.userId.value = s.userId || '';
   syncFormType();
   f.elements.tags.value = (s.tags || []).join(', ');
+  f.elements.details.value = s.details || '';
   f.elements.starred.checked = !!s.starred;
   $('#serverDlg').returnValue = ''; // Esc must not reuse the last 'save'
   $('#serverDlg').showModal();
@@ -258,6 +260,7 @@ $('#serverDlg').addEventListener('close', async () => {
     name: e.name.value, host: e.host.value, port: e.port.value, group: e.group.value, userId: e.userId.value,
     username: e.username.value, keyPath: e.keyPath.value.trim(), password: e.userId.value ? '' : e.password.value,
     tags: e.tags.value.split(',').map(t => t.trim()).filter(Boolean), starred: e.starred.checked,
+    details: e.details.value,
   });
   refreshServers();
 });
@@ -324,18 +327,47 @@ async function deleteUser(u, usedBy) {
 }
 $('#addUserBtn').onclick = () => editUser();
 
+// ================= theme =================
+// ponytail: theme lives in localStorage (per-machine UI preference); falls back to System if storage is unavailable.
+const darkMq = matchMedia('(prefers-color-scheme: dark)');
+const allTerms = new Set(); // every xterm, so a theme switch restyles open sessions too
+const getThemePref = () => { try { return localStorage.getItem('theme') || 'system'; } catch { return 'system'; } };
+const isLight = () => document.documentElement.dataset.theme === 'light';
+const termTheme = () => (isLight()
+  ? { background: '#ffffff', foreground: '#1d2127', cursor: '#1a9a3a', cursorAccent: '#ffffff', selectionBackground: '#1a9a3a40' }
+  : { background: '#0b0d10', foreground: '#e3e6eb', cursor: '#3ddc5f', cursorAccent: '#0b0d10', selectionBackground: '#3ddc5f55' });
+function applyTheme() {
+  const pref = getThemePref();
+  document.documentElement.dataset.theme = pref === 'system' ? (darkMq.matches ? 'dark' : 'light') : pref;
+  for (const term of allTerms) {
+    if (term.element?.isConnected) term.options.theme = termTheme();
+    else allTerms.delete(term); // disposed / closed
+  }
+}
+darkMq.addEventListener('change', applyTheme);
+applyTheme();
+
 // ================= settings =================
 $('#settingsBtn').onclick = async () => {
   const st = await api.settings.get();
   $('#keyStatus').textContent = st.fromEnv ? 'Using ANTHROPIC_API_KEY from the environment.'
     : st.hasApiKey ? 'An API key is saved (encrypted in Keychain).' : 'No API key set.';
   $('#settingsForm').reset();
+  $('#settingsForm').elements.theme.value = getThemePref();
   $('#settingsDlg').returnValue = '';
   $('#settingsDlg').showModal();
 };
+// Preview the theme while the dialog is open; Cancel/Esc restores the saved one.
+$('#settingsForm').elements.theme.onchange = e => { document.documentElement.dataset.theme =
+  e.target.value === 'system' ? (darkMq.matches ? 'dark' : 'light') : e.target.value; };
 $('#settingsDlg').addEventListener('close', () => {
-  const k = $('#settingsForm').elements.apiKey.value.trim();
-  if ($('#settingsDlg').returnValue === 'save' && k) api.settings.setApiKey(k);
+  const f = $('#settingsForm').elements;
+  if ($('#settingsDlg').returnValue === 'save') {
+    try { localStorage.setItem('theme', f.theme.value); } catch { /* ignore */ }
+    const k = f.apiKey.value.trim();
+    if (k) api.settings.setApiKey(k);
+  }
+  applyTheme();
 });
 
 // ================= terminals =================
@@ -374,8 +406,9 @@ function pushHist(serverId, cmd) {
 function makeTerm(host, connId, cwd, serverId) {
   const term = new Terminal({
     cursorBlink: true, fontSize: 13, fontFamily: 'Menlo, monospace',
-    theme: { background: '#0b0d10', cursor: '#3ddc5f', selectionBackground: '#3ddc5f55' },
+    theme: termTheme(),
   });
+  allTerms.add(term);
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(host);
@@ -515,6 +548,8 @@ async function openServer(s) {
 
   q('.sname').textContent = s.name;
   q('.saddr').textContent = `${s.username}@${s.host}:${s.port}`;
+  q('.sdetails').textContent = q('.sdetails').title = s.details || '';
+  q('.sdetails').hidden = !s.details;
   q('.back').onclick = () => show('home');
   const setStatus = (text, cls) => { q('.status').textContent = text; q('.status').className = 'status ' + cls; };
 

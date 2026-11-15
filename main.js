@@ -97,6 +97,7 @@ ipcMain.handle('servers:save', (_e, s) => {
     username: s.userId ? prev?.username || '' : String(s.username || ''), domain: type === 'rdp' ? String(s.domain || '') : '',
     keyPath: type === 'ssh' ? s.keyPath || '' : '',
     tags: Array.isArray(s.tags) ? s.tags : [], starred: !!s.starred,
+    details: String(s.details || '').trim().slice(0, 5000),
     group: String(s.group || '').trim().slice(0, 100),
     userId: s.userId && users().some(u => u.id === s.userId) ? s.userId : '',
     passwordEnc: s.password ? enc(s.password) : prev?.passwordEnc || '',
