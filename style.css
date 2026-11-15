@@ -479,3 +479,4 @@ dialog .dlgsec { margin: 14px 0 6px; font-size: 12px; letter-spacing: .06em; tex
 .apop button { align-self: flex-start; margin-top: 2px; }
 tr.srow.alerting td:first-child { box-shadow: inset 3px 0 var(--error); }
 @keyframes apulse { 50% { box-shadow: 0 0 0 3px #f0525222; } }
+.actions .ph-btn { display: inline-block; width: 30px; }

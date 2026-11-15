@@ -323,7 +323,8 @@
       </label>
       <label>Name <input name="name"></label>
       <label>Host <input name="host" required></label>
-      <label>Port <input name="port" type="number" value="22" min="1" max="65535"></label>
+      <label><span class="portLabel">Port</span> <input name="port" type="number" value="22" min="1" max="65535"></label>
+      <label class="rdp-only">SSH port (for Connect) <input name="sshPort" type="number" value="22" min="1" max="65535"></label>
       <label>Group <input name="group" list="groupList" placeholder="e.g. Production (type a new name to create one)"></label>
       <datalist id="groupList"></datalist>
       <label>Login
@@ -333,9 +334,10 @@
       <label class="own-cred">User <input name="username" list="usernameList" required></label>
       <datalist id="usernameList"></datalist>
       <label class="rdp-only">Domain <input name="domain" placeholder="optional, e.g. CORP"></label>
-      <label class="ssh-only own-cred">Private key path <input name="keyPath" placeholder="~/.ssh/id_ed25519"></label>
+      <label class="own-cred">Private key path <input name="keyPath" placeholder="~/.ssh/id_ed25519 (optional, SSH only)"></label>
       <label class="own-cred">Password <input name="password" type="password" placeholder="leave blank to keep / use key or agent"></label>
-      <p class="rdp-only hint">RDP opens in Microsoft Windows App (Mac App Store). A saved password is copied to the clipboard for its login prompt and cleared after 45 s.</p>
+      <p class="rdp-only hint"><b>Desktop</b> opens RDP in Microsoft Windows App (Mac App Store); a saved password is copied to the clipboard for its login prompt and cleared after 45 s.
+        <b>Connect</b> opens SSH to the server's Windows OpenSSH with the same login (DOMAIN\user when a domain is set) — terminal, files, logs and metrics.</p>
       <label>Tags <input name="tags" placeholder="prod, web"></label>
       <label>Details <textarea name="details" rows="3" placeholder="Free text: purpose, owner, notes…"></textarea></label>
       <label class="row"><input name="starred" type="checkbox"> Favorite</label>

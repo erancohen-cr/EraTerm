@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 const { StringDecoder } = require('node:string_decoder');
 const { METRICS_CMD, parseMetrics, TOP_CMD, parseTop } = require('./metrics');
 const { killCmd, DROP_CACHES_CMD, SCAN_CMD, parseScan, cleanCmd } = require('./maint');
+const winlogs = require('./winlogs');
 const { shq, buildRdp, remoteDir, AI_PROVIDERS, validModel, normModel, buildAiRequest, parseAiResponse, buildModelsRequest, parseModels } = require('./util');
 const { runDeployment } = require('./deploy');
 
@@ -55,8 +56,12 @@ const publicUser = ({ passwordEnc, ...u }) => ({ ...u, hasPassword: !!passwordEn
 // A server linked to a saved user takes its username/password/key from it.
 const withCreds = s => {
   const u = s?.userId && users().find(x => x.id === s.userId);
-  return u ? { ...s, username: u.username, passwordEnc: u.passwordEnc, keyPath: s.type === 'rdp' ? '' : u.keyPath } : s;
+  return u ? { ...s, username: u.username, passwordEnc: u.passwordEnc, keyPath: u.keyPath } : s;
 };
+// RDP entries also connect over SSH (Windows OpenSSH) with the same login: own SSH port, DOMAIN\user when set.
+const sshTarget = s => (s.type === 'rdp'
+  ? { port: Number(s.sshPort) || 22, username: s.domain && s.username ? `${s.domain}\\${s.username}` : s.username }
+  : { port: s.port, username: s.username });
 const publicServer = s => {
   const { passwordEnc, ...rest } = withCreds(s);
   const u = s.userId && users().find(x => x.id === s.userId);
@@ -95,13 +100,14 @@ ipcMain.handle('servers:save', (_e, s) => {
     id: s.id || crypto.randomUUID(), type,
     name: String(s.name || s.host), host: String(s.host), port: Number(s.port) || (type === 'rdp' ? 3389 : 22),
     username: s.userId ? prev?.username || '' : String(s.username || ''), domain: type === 'rdp' ? String(s.domain || '') : '',
-    keyPath: type === 'ssh' ? s.keyPath || '' : '',
+    keyPath: s.keyPath || '', // RDP entries use it for their SSH connection
+    sshPort: type === 'rdp' ? Number(s.sshPort) || 22 : undefined,
     tags: Array.isArray(s.tags) ? s.tags : [], starred: !!s.starred,
     details: String(s.details || '').trim().slice(0, 5000),
     group: String(s.group || '').trim().slice(0, 100),
     userId: s.userId && users().some(u => u.id === s.userId) ? s.userId : '',
     passwordEnc: s.password ? enc(s.password) : prev?.passwordEnc || '',
-    os: prev?.host === String(s.host) ? prev.os || '' : '', // new host: detect again
+    os: type === 'rdp' ? 'windows' : prev?.host === String(s.host) ? prev.os || '' : '', // new host: detect again
   };
   writeJson('servers.json', prev ? list.map(x => (x.id === rec.id ? rec : x)) : [...list, rec]);
   return publicServer(rec);
@@ -179,7 +185,7 @@ const openConn = serverId => new Promise((resolve, reject) => {
   let hostKeyError = null;
 
   const cfg = {
-    host: s.host, port: s.port, username: s.username, readyTimeout: 15000, keepaliveInterval: 15000,
+    host: s.host, ...sshTarget(s), readyTimeout: 15000, keepaliveInterval: 15000,
     hostHash: 'sha256',
     // Trust on first use; refuse if the key changes later.
     hostVerifier: fp => {
@@ -200,9 +206,14 @@ const openConn = serverId => new Promise((resolve, reject) => {
   conn.on('ready', () => {
     const c = { conn, serverId, uname: '', sftp: null, err: null };
     conns.set(connId, c);
-    exec(conn, 'uname -a').then(u => (c.uname = u.trim())).catch(() => {});
     patchServer(serverId, { lastSeen: Date.now() });
-    detectOs(conn).then(os => os && os !== s.os && patchServer(serverId, { os })).catch(() => {});
+    // OS per connection (logs pick PowerShell on Windows); also remembered on the server for the Desktop button.
+    c.osP = detectOs(conn).catch(() => '');
+    c.osP.then(os => {
+      if (os && os !== s.os) patchServer(serverId, { os });
+      // Windows has no uname: describe it with ver for the AI prompts.
+      return exec(conn, os === 'windows' ? 'cmd /c ver' : 'uname -a').then(u => (c.uname = (os === 'windows' ? 'Windows ' : '') + u.trim()));
+    }).catch(() => {});
     resolve(connId);
   });
   conn.on('error', err => {
@@ -216,6 +227,7 @@ const openConn = serverId => new Promise((resolve, reject) => {
   conn.connect(cfg);
 });
 ipcMain.handle('ssh:connect', (_e, serverId) => openConn(serverId));
+ipcMain.handle('ssh:os', (_e, connId) => getConn(connId).osP); // 'windows' | 'macos' | 'linux' | 'unix' | ''
 
 ipcMain.on('ssh:disconnect', (_e, connId) => conns.get(connId)?.conn.end());
 
@@ -598,16 +610,33 @@ ipcMain.on('deploy:cancel', (_e, runId) => deployRuns.get(runId)?.abort());
 // ---------- logs ----------
 const lineCount = n => Math.min(Math.max(parseInt(n, 10) || 500, 1), 100000);
 
-ipcMain.handle('logs:read', (_e, connId, file, n) =>
-  exec(getConn(connId).conn, `tail -n ${lineCount(n)} -- ${shq(file)}`, true));
+// Windows servers (detected per connection) read logs with PowerShell; see winlogs.js.
+const isWin = async connId => (await getConn(connId).osP) === 'windows';
+const notWinEventLog = src => {
+  if (winlogs.isEventLog(src)) throw new Error('Event logs ("eventlog:…") exist only on Windows servers.');
+};
 
-// pty so the remote tail gets SIGHUP when we close the channel.
+ipcMain.handle('logs:read', async (_e, connId, file, n) => {
+  const { conn } = getConn(connId);
+  if (await isWin(connId)) return exec(conn, winlogs.readCmd(file, n), true);
+  notWinEventLog(file);
+  return exec(conn, `tail -n ${lineCount(n)} -- ${shq(file)}`, true);
+});
+
+// Unix: pty so the remote tail gets SIGHUP when we close the channel.
+// Windows: no pty (ConPTY would wrap lines and add escape codes); the PowerShell loop's heartbeat ends it instead.
 ipcMain.handle('logs:tail', async (_e, connId, file, n) => {
-  const stream = await p(cb => getConn(connId).conn.exec(`tail -n ${lineCount(n)} -F -- ${shq(file)}`, { pty: true }, cb));
+  const { conn } = getConn(connId);
+  const win = await isWin(connId);
+  if (!win) notWinEventLog(file);
+  const stream = win
+    ? await p(cb => conn.exec(winlogs.tailCmd(file, n), cb))
+    : await p(cb => conn.exec(`tail -n ${lineCount(n)} -F -- ${shq(file)}`, { pty: true }, cb));
   const id = crypto.randomUUID();
   const decoder = new StringDecoder('utf8');
   tails.set(id, stream);
-  stream.on('data', d => send('logs:data', id, decoder.write(d)));
+  stream.on('data', d => send('logs:data', id, win ? winlogs.stripHeartbeat(decoder.write(d)) : decoder.write(d)));
+  if (win) stream.stderr.on('data', d => send('logs:data', id, `ERROR ${String(d).trim()}\n`)); // e.g. file not found
   stream.on('close', () => { tails.delete(id); send('logs:end', id); });
   return id;
 });

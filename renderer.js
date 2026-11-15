@@ -49,6 +49,9 @@ const fmtSize = n => {
   return (i ? n.toFixed(1) : n) + ' ' + u[i];
 };
 const basename = p => p.replace(/\/+$/, '').split('/').pop() || '/';
+// Log source names: Windows paths use backslashes; "eventlog:System" is a Windows Event Log.
+const isEventLogSrc = p => /^eventlog:/i.test(p);
+const srcName = p => (isEventLogSrc(p) ? p.replace(/^eventlog:/i, '') : p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p);
 const dirname = p => p.replace(/\/[^/]*\/?$/, '') || '/';
 
 let toastTimer;
@@ -208,8 +211,11 @@ function serverRow(s) {
       iconBtn(s.starred ? '★' : '☆', s.starred ? 'Unfavorite' : 'Favorite', () => toggleStar(s), 'icon' + (s.starred ? ' star' : '')),
       iconBtn('✎', 'Edit', () => editServer(s)),
       iconBtn('🗑', 'Delete', () => deleteServer(s), 'icon danger'),
-      typeOf(s) === 'ssh' ? iconBtn(...(DESKTOP[s.os] || DESKTOP['']), () => openDesktop(s), 'desk') : el('span', { className: 'desk ph' }), // ph keeps columns aligned
-      iconBtn(views.has(s.id) ? '↗ Open' : '▶ Connect', 'Connect', () => connectServer(s), 'primary')));
+      typeOf(s) === 'rdp'
+        ? iconBtn('🖥 Desktop', `Open Remote Desktop (RDP, port ${s.port})`, () => openRdp(s), 'desk')
+        : iconBtn(...(DESKTOP[s.os] || DESKTOP['']), () => openDesktop(s), 'desk'),
+      iconBtn(views.has(s.id) ? '↗ Open' : '▶ Connect',
+        typeOf(s) === 'rdp' ? `Open SSH (Windows OpenSSH, port ${s.sshPort || 22}) with the same login` : 'Connect', () => connectServer(s), 'primary')));
   tr.ondblclick = () => connectServer(s);
   return tr;
 }
@@ -250,7 +256,7 @@ const typeOf = s => (s.type === 'rdp' ? 'rdp' : 'ssh');
 const defaultPort = s => (typeOf(s) === 'rdp' ? 3389 : 22);
 
 function connectServer(s) {
-  return typeOf(s) === 'rdp' ? openRdp(s) : openServer(s);
+  return openServer(s); // RDP entries connect over SSH too; their Desktop button opens RDP
 }
 
 async function openRdp(s) {
@@ -290,6 +296,7 @@ function editServer(s = {}) {
   for (const k of ['id', 'name', 'host', 'port', 'username', 'keyPath', 'group']) if (s[k] != null) f.elements[k].value = s[k];
   f.elements.type.value = typeOf(s);
   f.elements.domain.value = s.domain || '';
+  f.elements.sshPort.value = s.sshPort || 22;
   f.elements.userId.replaceChildren(el('option', { value: '', textContent: 'Enter username / password below' }),
     ...users.map(u => el('option', { value: u.id, textContent: `Saved user: ${u.label} (${u.username})` })));
   f.elements.userId.value = s.userId || '';
@@ -308,7 +315,8 @@ function syncFormType() {
   const saved = !!f.elements.userId.value;
   f.querySelectorAll('.rdp-only').forEach(x => (x.hidden = !rdp));
   f.querySelectorAll('.ssh-only').forEach(x => (x.hidden = rdp));
-  f.querySelectorAll('.own-cred').forEach(x => (x.hidden = saved || (rdp && x.classList.contains('ssh-only'))));
+  f.querySelectorAll('.own-cred').forEach(x => (x.hidden = saved));
+  f.querySelector('.portLabel').textContent = rdp ? 'RDP port (for Desktop)' : 'Port';
   f.querySelector('.saved-user').hidden = !saved;
   f.elements.username.required = !rdp && !saved; // RDP can prompt for the user
   const port = f.elements.port;
@@ -328,7 +336,7 @@ $('#serverDlg').addEventListener('close', async () => {
   if ($('#serverDlg').returnValue !== 'save') return;
   const e = $('#serverForm').elements;
   await api.servers.save({
-    id: e.id.value || undefined, type: e.type.value, domain: e.domain.value.trim(),
+    id: e.id.value || undefined, type: e.type.value, domain: e.domain.value.trim(), sshPort: e.sshPort.value,
     name: e.name.value, host: e.host.value, port: e.port.value, group: e.group.value, userId: e.userId.value,
     username: e.username.value, keyPath: e.keyPath.value.trim(), password: e.userId.value ? '' : e.password.value,
     tags: e.tags.value.split(',').map(t => t.trim()).filter(Boolean), starred: e.starred.checked,
@@ -717,7 +725,9 @@ async function openServer(s) {
   views.set(s.id, v);
 
   q('.sname').textContent = s.name;
-  q('.saddr').textContent = `${s.username}@${s.host}:${s.port}`;
+  q('.saddr').textContent = typeOf(s) === 'rdp' // the server page is the SSH side of an RDP entry
+    ? `${s.domain ? s.domain + '\\' : ''}${s.username}@${s.host}:${s.sshPort || 22} (SSH)`
+    : `${s.username}@${s.host}:${s.port}`;
   q('.sdetails').textContent = q('.sdetails').title = s.details || '';
   q('.sdetails').hidden = !s.details;
   q('.back').onclick = () => show('home');
@@ -1000,6 +1010,7 @@ async function openServer(s) {
           iconBtn('◧', 'Open in side terminal', () => openSide(cwd)),
           iconBtn('›_', 'Open in terminal', () => openInTerminal(cwd)),
           iconBtn('⧉', 'Copy path', () => navigator.clipboard.writeText(e.path).then(() => toast(`Copied ${e.path}`), err => toast(cleanErr(err), true))),
+          isDir ? el('span', { className: 'ph-btn' }) : iconBtn('≡⁺', 'Add to Logs (open it in the Logs tab)', () => v.addToLogs(e.path)),
           iconBtn('⤓', isDir ? 'Download as .tar.gz' : 'Download', () => download(e)),
           iconBtn('🗑', 'Delete', () => remove(e), 'icon danger')));
       tr.ondblclick = () => (isDir ? loadDir(e.path) : download(e));
@@ -1067,7 +1078,7 @@ async function openServer(s) {
     q('.lcount').textContent = lg.paths.length;
     q('.llist').replaceChildren(...lg.paths.filter(p => !f || p.toLowerCase().includes(f)).map(p =>
       el('li', { className: p === lg.cur ? 'active' : '', title: p, onclick: () => selectLog(p) },
-        el('span', { textContent: '▫ ' + basename(p) }),
+        el('span', { textContent: (isEventLogSrc(p) ? '⚑ ' : '▫ ') + srcName(p) }),
         iconBtn('×', 'Remove source', () => removeSource(p)))));
   }
   const saveSources = () => api.servers.setLogPaths(s.id, lg.paths);
@@ -1080,22 +1091,59 @@ async function openServer(s) {
     }
     renderSources();
   }
+  function addLogSource(p) {
+    p = String(p).trim();
+    if (!p) return null;
+    if (!lg.paths.includes(p)) { lg.paths.push(p); saveSources(); }
+    return p;
+  }
   q('.ladd').onsubmit = e => {
     e.preventDefault();
     const inp = q('.ladd input');
-    const p = inp.value.trim();
+    const p = addLogSource(inp.value);
     if (!p) return;
-    if (!lg.paths.includes(p)) { lg.paths.push(p); saveSources(); }
     inp.value = '';
     selectLog(p);
   };
   q('.lfilter').oninput = renderSources;
+  // From the File Manager: add the file as a log source and open it.
+  v.addToLogs = p => {
+    addLogSource(p);
+    pickPanel('logs');
+    selectLog(p);
+    toast(`Added to Logs: ${p}`);
+  };
+
+  // Suggestions for the "add source" box, by the server's OS (known after the first connection).
+  const LOG_SUGGEST = {
+    windows: ['eventlog:System', 'eventlog:Application', 'eventlog:Security', 'eventlog:Setup',
+      'eventlog:Microsoft-Windows-OpenSSH/Operational', 'eventlog:Microsoft-Windows-PowerShell/Operational',
+      'C:\\ProgramData\\ssh\\logs\\sshd.log', 'C:\\Windows\\Logs\\CBS\\CBS.log', 'C:\\Windows\\Logs\\DISM\\dism.log'],
+    macos: ['/var/log/system.log', '/var/log/install.log', '/var/log/wifi.log'],
+    linux: ['/var/log/syslog', '/var/log/messages', '/var/log/auth.log', '/var/log/secure', '/var/log/kern.log',
+      '/var/log/cloud-init.log', '/var/log/nginx/error.log', '/var/log/nginx/access.log', '/var/log/dpkg.log', '/var/log/dnf.log'],
+  };
+  // OS detected on the live connection wins; before that, what we last knew (RDP entries are Windows).
+  const osOf = async () => (v.connId && (await api.ssh.os(v.connId).catch(() => '')))
+    || servers.find(x => x.id === s.id)?.os || s.os || (typeOf(s) === 'rdp' ? 'windows' : '');
+  const suggId = 'lsugg-' + s.id;
+  const sugg = el('datalist', { id: suggId });
+  root.append(sugg);
+  q('.ladd input').setAttribute('list', suggId);
+  const fillSuggest = async () => {
+    const os = await osOf();
+    q('.ladd input').placeholder = os === 'windows' ? 'C:\\path\\app.log  or  eventlog:System' : '/var/log/syslog';
+    sugg.replaceChildren(...(LOG_SUGGEST[os] || LOG_SUGGEST.linux).filter(x => !lg.paths.includes(x)).map(value => el('option', { value })));
+  };
+  q('.ladd input').onfocus = fillSuggest;
+  fillSuggest();
 
   function selectLog(p) {
     lg.cur = p;
-    q('.lname').textContent = basename(p);
-    q('.lpath').textContent = p;
-    q('.lcopy').hidden = false;
+    q('.lname').textContent = srcName(p);
+    q('.lpath').textContent = isEventLogSrc(p) ? 'Windows Event Log' : p;
+    q('.lcopy').hidden = isEventLogSrc(p);
+    q('.ldl').hidden = isEventLogSrc(p); // an event log isn't a file
     renderSources();
     reloadLog();
   }
@@ -1197,7 +1245,9 @@ async function openServer(s) {
   q('.llines').onchange = reloadLog;
   q('.lrefresh').onclick = reloadLog;
   q('.lclear').onclick = () => { lbody.replaceChildren(); updateLogStat(); }; // screen only, tail keeps running
-  q('.ldl').onclick = () => lg.cur && download({ name: basename(lg.cur), path: lg.cur, type: 'file' });
+  // SFTP on Windows wants /C:/dir/file, people type C:\dir\file
+  const sftpPath = p => (/^[A-Za-z]:[\\/]/.test(p) ? '/' + p.replace(/\\/g, '/') : p);
+  q('.ldl').onclick = () => lg.cur && !isEventLogSrc(lg.cur) && download({ name: srcName(lg.cur), path: sftpPath(lg.cur), type: 'file' });
 
   // Ask AI about the log: sends the lines currently shown (filters applied), newest last.
   const visibleLogText = () => [...lbody.children].filter(r => !r.hidden)

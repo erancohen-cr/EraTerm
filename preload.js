@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
     closeShell: id => ipcRenderer.send('ssh:closeShell', id),
     metrics: connId => ipcRenderer.invoke('ssh:metrics', connId),
     top: (connId, sortBy) => ipcRenderer.invoke('ssh:top', connId, sortBy),
+    os: connId => ipcRenderer.invoke('ssh:os', connId),
     kill: (connId, pid, force) => ipcRenderer.invoke('ssh:kill', connId, pid, force),
     onData: on('ssh:data'),
     onClosed: on('ssh:closed'),
