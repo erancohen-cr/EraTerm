@@ -1,4 +1,28 @@
-/* global api, Terminal, FitAddon, shq, logLevel */
+/* global api, Terminal, FitAddon, shq, logLevel, parseLogTime, logRowVisible, fileKind */
+
+// Outline file-manager icons (stroke only, 1em, colored via CSS by kind).
+const FILE_ICONS = {
+  dir: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  exec: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M7 10l3 2-3 2 M12 15h5',
+  text: 'M6 3h8l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z M14 3v4h4 M8 12h8 M8 15h8 M8 18h5',
+  archive: 'M6 3h8l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z M14 3v4h4 M10 5h2 M10 8h2 M10 11h2 M9 14h4v4H9z',
+  image: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M8.5 10.5a1.5 1.5 0 1 0 0-.01 M21 15l-5-5-9 9',
+  link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1 M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1',
+  file: 'M6 3h8l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z M14 3v4h4',
+};
+const KIND_TITLE = { dir: 'Folder', exec: 'Executable / script', text: 'Text file', archive: 'Archive', image: 'Image', link: 'Symbolic link', file: 'File' };
+function fileIcon(kind) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'ficon k-' + kind);
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', FILE_ICONS[kind] || FILE_ICONS.file);
+  const title = document.createElementNS(NS, 'title');
+  title.textContent = KIND_TITLE[kind] || 'File';
+  svg.append(title, path);
+  return svg;
+}
 const $ = s => document.querySelector(s);
 const el = (tag, props = {}, ...kids) => {
   const e = Object.assign(document.createElement(tag), props);
@@ -348,15 +372,73 @@ darkMq.addEventListener('change', applyTheme);
 applyTheme();
 
 // ================= settings =================
-$('#settingsBtn').onclick = async () => {
-  const st = await api.settings.get();
-  $('#keyStatus').textContent = st.fromEnv ? 'Using ANTHROPIC_API_KEY from the environment.'
-    : st.hasApiKey ? 'An API key is saved (encrypted in Keychain).' : 'No API key set.';
-  $('#settingsForm').reset();
-  $('#settingsForm').elements.theme.value = getThemePref();
+let aiSettings = null; // last settings:get, so switching provider in the dialog shows that provider's state
+function showProvider(p) {
+  const f = $('#settingsForm').elements;
+  const d = aiSettings.providers[p];
+  $('#keyLabel').textContent = `${d.label} API key`;
+  $('#keyStatus').textContent = d.fromEnv ? `Using ${d.env} from the environment (it overrides a saved key).`
+    : d.hasKey ? 'A key is saved for this provider (encrypted in Keychain).' : 'No key for this provider — Ask AI is disabled until you add one.';
+  f.clearKey.parentElement.hidden = !d.hasKey || d.fromEnv;
+  f.clearKey.checked = false;
+  f.apiKey.value = '';
+  $('#aiModelList').replaceChildren(...d.models.map(value => el('option', { value })));
+  f.aiModel.value = d.model;
+}
+async function openSettings(focusKey = false) {
+  aiSettings = await api.settings.get();
+  const f = $('#settingsForm');
+  f.reset();
+  f.elements.theme.value = getThemePref();
+  f.elements.aiProvider.replaceChildren(...Object.entries(aiSettings.providers)
+    .map(([value, d]) => el('option', { value, textContent: d.label + (d.hasKey ? '  ✓' : '') })));
+  f.elements.aiProvider.value = aiSettings.aiProvider;
+  showProvider(aiSettings.aiProvider);
   $('#settingsDlg').returnValue = '';
   $('#settingsDlg').showModal();
-};
+  if (focusKey) f.elements.apiKey.focus();
+}
+$('#settingsForm').elements.aiProvider.onchange = e => showProvider(e.target.value);
+$('#settingsBtn').onclick = () => openSettings();
+
+// Confirm / small form dialog. body: string or element(s). Resolves true on OK.
+function ask({ title, body, ok = 'OK', danger = false, okDisabled = false }) {
+  const dlg = $('#actDlg');
+  dlg.querySelector('.actTitle').textContent = title;
+  dlg.querySelector('.actBody').replaceChildren(...[].concat(body).map(b => (typeof b === 'string' ? el('p', { textContent: b }) : b)));
+  const okBtn = dlg.querySelector('.actOk');
+  okBtn.textContent = ok;
+  okBtn.className = 'actOk ' + (danger ? 'danger-btn' : 'primary');
+  okBtn.disabled = okDisabled;
+  dlg.returnValue = '';
+  dlg.showModal();
+  return new Promise(res => dlg.addEventListener('close', () => res(dlg.returnValue === 'ok'), { once: true }));
+}
+
+// ---- AI helpers shared by Terminal and Logs ----
+// Last n lines of an xterm's buffer as plain text (what's on screen plus scrollback).
+function termText(term, n) {
+  const b = term.buffer.active;
+  const out = [];
+  for (let i = Math.max(0, b.length - n); i < b.length; i++) out.push(b.getLine(i)?.translateToString(true) ?? '');
+  return out.join('\n').replace(/\n+$/, '');
+}
+function showAiAnswer(box, text) {
+  box.replaceChildren(
+    el('div', { className: 'aiOutHead' }, el('b', { textContent: '✦ AI analysis' }), el('span', { className: 'grow' }),
+      iconBtn('⧉', 'Copy answer', () => navigator.clipboard.writeText(text).then(() => toast('Copied'))),
+      iconBtn('×', 'Close', () => { box.hidden = true; })),
+    el('div', { className: 'aiOutBody', textContent: text })); // plain text: model output is never rendered as HTML
+  box.hidden = false;
+}
+// Missing / rejected key → message + button that opens AI configuration.
+function showAiError(target, err) {
+  const msg = cleanErr(err);
+  if (msg.startsWith('NO_API_KEY')) {
+    target.replaceChildren(msg.replace(/^NO_API_KEY:\s*/, '') + ' ',
+      el('button', { type: 'button', className: 'sm primary', textContent: 'Add API key', onclick: () => openSettings(true) }));
+  } else target.textContent = msg;
+}
 // Preview the theme while the dialog is open; Cancel/Esc restores the saved one.
 $('#settingsForm').elements.theme.onchange = e => { document.documentElement.dataset.theme =
   e.target.value === 'system' ? (darkMq.matches ? 'dark' : 'light') : e.target.value; };
@@ -364,8 +446,10 @@ $('#settingsDlg').addEventListener('close', () => {
   const f = $('#settingsForm').elements;
   if ($('#settingsDlg').returnValue === 'save') {
     try { localStorage.setItem('theme', f.theme.value); } catch { /* ignore */ }
-    const k = f.apiKey.value.trim();
-    if (k) api.settings.setApiKey(k);
+    api.settings.setAi({
+      provider: f.aiProvider.value, model: f.aiModel.value.trim(),
+      key: f.clearKey.checked ? null : f.apiKey.value.trim(),
+    }).catch(err => toast(cleanErr(err), true));
   }
   applyTheme();
 });
@@ -565,6 +649,7 @@ async function openServer(s) {
       requestAnimationFrame(() => active?.t.term.focus());
     }
     if (name === 'files' && !fm.loaded) loadDir('');
+    if (name === 'stats') loadStats(); // measure every time the tab is opened
   }
   root.querySelectorAll('.srvbody > .side .navitem').forEach(b => (b.onclick = () => pickPanel(b.dataset.panel)));
 
@@ -819,7 +904,7 @@ async function openServer(s) {
       const cwd = isDir ? e.path : fm.path;
       const tr = el('tr', { className: isDir ? 'dir' : '' },
         el('td', { className: 'fname' },
-          el('span', { className: 'ficon', textContent: isDir ? '▰' : '▫' }),
+          fileIcon(fileKind(e)),
           el('span', { textContent: e.name }),
           e.link ? el('small', { className: 'link mono', textContent: `→ ${e.link}` }) : null),
         el('td', { className: 'r muted mono', textContent: isDir ? '—' : fmtSize(e.size) }),
@@ -902,7 +987,10 @@ async function openServer(s) {
   function removeSource(p) {
     lg.paths = lg.paths.filter(x => x !== p);
     saveSources();
-    if (lg.cur === p) { stopTail(); lg.cur = null; lbody.replaceChildren(); q('.lname').textContent = 'Select a log source'; q('.lpath').textContent = ''; }
+    if (lg.cur === p) {
+      stopTail(); lg.cur = null; lbody.replaceChildren(); updateLogStat();
+      q('.lname').textContent = 'Select a log source'; q('.lpath').textContent = ''; q('.lcopy').hidden = true;
+    }
     renderSources();
   }
   q('.ladd').onsubmit = e => {
@@ -920,6 +1008,7 @@ async function openServer(s) {
     lg.cur = p;
     q('.lname').textContent = basename(p);
     q('.lpath').textContent = p;
+    q('.lcopy').hidden = false;
     renderSources();
     reloadLog();
   }
@@ -929,30 +1018,57 @@ async function openServer(s) {
   }
 
   function updateLogStat() {
-    q('.lstat').textContent = (lg.live ? '● Live · ' : '') + `${lbody.childElementCount} lines`;
+    const counts = { info: 0, warn: 0, error: 0, debug: 0 };
+    let shown = 0;
+    for (const r of lbody.children) { if (r.dataset.lv in counts) counts[r.dataset.lv]++; if (!r.hidden) shown++; }
+    for (const b of root.querySelectorAll('.lv')) b.querySelector('small').textContent = counts[b.dataset.lv] || '';
+    q('.lstat').textContent = (lg.live ? '● Live · ' : '') + `${shown} of ${lbody.childElementCount} lines`;
     q('.llive').classList.toggle('on', lg.live);
   }
 
-  function applySearch(row) {
+  // A row shows only if it passes all three: time window, level buttons, search (in "Only matches" mode).
+  lg.levels = new Set(); // empty = all levels
+  function applyFilters(row, cutoff = sinceCutoff()) {
     const term = q('.lsearch').value.toLowerCase();
     const match = !!term && row.dataset.text.includes(term);
-    if (q('.lmode').value === 'filter') { row.classList.remove('hit'); row.hidden = !!term && !match; }
-    else { row.hidden = false; row.classList.toggle('hit', match); }
+    const onlyMatches = q('.lmode').value === 'filter';
+    row.classList.toggle('hit', match && !onlyMatches);
+    row.hidden = !logRowVisible(
+      { t: row.dataset.t ? Number(row.dataset.t) : null, lv: row.dataset.lv, text: row.dataset.text },
+      { cutoff, levels: lg.levels, term, onlyMatches });
   }
-  const searchAll = () => { for (const r of lbody.children) applySearch(r); };
-  q('.lsearch').oninput = searchAll;
-  q('.lmode').onchange = searchAll;
+  const sinceCutoff = () => { const ms = Number(q('.lsince').value); return ms ? Date.now() - ms : 0; };
+  const filterAll = () => { const c = sinceCutoff(); for (const r of lbody.children) applyFilters(r, c); updateLogStat(); };
+  q('.lsearch').oninput = filterAll;
+  q('.lmode').onchange = filterAll;
+  q('.lsince').onchange = filterAll;
+  for (const b of root.querySelectorAll('.lv')) {
+    b.onclick = () => {
+      lg.levels[lg.levels.has(b.dataset.lv) ? 'delete' : 'add'](b.dataset.lv);
+      b.classList.toggle('on', lg.levels.has(b.dataset.lv));
+      filterAll();
+    };
+  }
+  q('.lcopy').onclick = () => lg.cur && navigator.clipboard.writeText(lg.cur)
+    .then(() => toast(`Copied ${lg.cur}`), err => toast(cleanErr(err), true));
 
   function appendText(chunk) {
     const atBottom = lbody.scrollHeight - lbody.scrollTop - lbody.clientHeight < 40;
     const lines = (lg.partial + chunk.replace(/\r/g, '')).split('\n');
     lg.partial = lines.pop();
     const frag = document.createDocumentFragment();
+    const cutoff = sinceCutoff();
     for (const line of lines) {
-      const row = el('div', { className: 'lrow ' + logLevel(line) },
+      const lv = logLevel(line);
+      const row = el('div', { className: 'lrow ' + lv },
         el('span', { className: 'ln', textContent: ++lg.n }), el('span', { textContent: line }));
       row.dataset.text = line.toLowerCase();
-      applySearch(row);
+      row.dataset.lv = lv;
+      // Continuation lines (stack traces) take the time of the line above them.
+      const t = parseLogTime(line);
+      if (t !== null) lg.lastT = t;
+      if (lg.lastT != null) row.dataset.t = lg.lastT;
+      applyFilters(row, cutoff);
       frag.append(row);
     }
     lbody.append(frag);
@@ -965,7 +1081,7 @@ async function openServer(s) {
   async function reloadLog() {
     stopTail();
     lbody.replaceChildren();
-    lg.partial = ''; lg.n = 0;
+    lg.partial = ''; lg.n = 0; lg.lastT = null;
     updateLogStat();
     if (!lg.cur || !v.connId) return;
     const n = q('.llines').value;
@@ -995,6 +1111,38 @@ async function openServer(s) {
   q('.lrefresh').onclick = reloadLog;
   q('.lclear').onclick = () => { lbody.replaceChildren(); updateLogStat(); }; // screen only, tail keeps running
   q('.ldl').onclick = () => lg.cur && download({ name: basename(lg.cur), path: lg.cur, type: 'file' });
+
+  // Ask AI about the log: sends the lines currently shown (filters applied), newest last.
+  const visibleLogText = () => [...lbody.children].filter(r => !r.hidden)
+    .map(r => r.lastElementChild.textContent).join('\n');
+  q('.laiBtn').onclick = () => {
+    const box = q('.lai');
+    box.hidden = !box.hidden;
+    if (!box.hidden) {
+      const n = [...lbody.children].filter(r => !r.hidden).length;
+      q('.laiNote').textContent = lg.cur
+        ? `Sends the ${n} line${n === 1 ? '' : 's'} shown now (after filters) from ${lg.cur}. Narrow with the filters first for a focused answer.`
+        : 'Select a log source first.';
+      q('.laiQ').focus();
+    }
+  };
+  q('.laiClose').onclick = () => { q('.lai').hidden = true; };
+  q('.laiForm').onsubmit = async e => {
+    e.preventDefault();
+    if (!v.connId || !lg.cur) return;
+    const text = visibleLogText();
+    if (!text.trim()) { q('.laiNote').textContent = 'No lines shown — load the log or relax the filters.'; return; }
+    const btn = q('.laiForm button.primary');
+    btn.disabled = true; btn.textContent = 'Analyzing…';
+    try {
+      const answer = await api.ai.analyze(v.connId, { kind: 'logs', question: q('.laiQ').value.trim(), text, source: lg.cur });
+      showAiAnswer(q('.lai .aiOut'), answer);
+    } catch (err) {
+      showAiError(q('.laiNote'), err);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Analyze';
+    }
+  };
   renderSources();
 
   // ---- AI (suggest, show, run only on approval) ----
@@ -1004,7 +1152,8 @@ async function openServer(s) {
     if (!req || !v.connId) return;
     q('.aiError').textContent = '';
     q('.aiResult').hidden = true;
-    const btn = q('.aiForm button');
+    q('.tAiOut').hidden = true;
+    const btn = q('.aiSuggest');
     btn.disabled = true; btn.textContent = 'Thinking…';
     try {
       const r = await api.ai.suggest(v.connId, req);
@@ -1014,9 +1163,30 @@ async function openServer(s) {
       q('.aiRisk').className = 'aiRisk risk-' + r.risk;
       q('.aiResult').hidden = false;
     } catch (err) {
-      q('.aiError').textContent = cleanErr(err);
+      showAiError(q('.aiError'), err);
     } finally {
-      btn.disabled = false; btn.textContent = 'Suggest';
+      btn.disabled = false; btn.textContent = 'Suggest command';
+    }
+  };
+
+  // Ask about the terminal screen: sends the active session's recent output (read-only, nothing runs).
+  q('.aiAsk').onclick = async () => {
+    if (!v.connId) return;
+    const sess = active;
+    if (!sess) { q('.aiError').textContent = 'Open a terminal session first.'; return; }
+    const text = termText(sess.t.term, 400);
+    if (!text.trim()) { q('.aiError').textContent = 'The terminal is empty — run something first.'; return; }
+    q('.aiError').textContent = '';
+    q('.aiResult').hidden = true;
+    const btn = q('.aiAsk');
+    btn.disabled = true; btn.textContent = 'Analyzing…';
+    try {
+      const answer = await api.ai.analyze(v.connId, { kind: 'terminal', question: q('.aiInput').value.trim(), text });
+      showAiAnswer(q('.tAiOut'), answer);
+    } catch (err) {
+      showAiError(q('.aiError'), err);
+    } finally {
+      btn.disabled = false; btn.textContent = '✦ Ask about output';
     }
   };
   q('.aiApprove').onclick = () => {
@@ -1040,8 +1210,221 @@ async function openServer(s) {
         q('.mDisk').textContent = `${pct(m.diskUsed, m.diskTotal)} (${gb(m.diskUsed)}/${gb(m.diskTotal)})`;
         q('.fdisk').textContent = `Disk ${gb(m.diskUsed)} / ${gb(m.diskTotal)} (${pct(m.diskUsed, m.diskTotal)})`;
       }
+      v.checkAlerts?.({ cpu: m.cpu, mem: m.memTotal ? (m.memUsed / m.memTotal) * 100 : null, disk: m.diskTotal ? (m.diskUsed / m.diskTotal) * 100 : null });
     } catch { /* unsupported OS (e.g. Windows): leave dashes */ }
   };
+
+  // ---- metrics tab: cards with 270° gauges, alerts, actions, top processes ----
+  const RING = 2 * Math.PI * 42, ARC = RING * 0.75;
+  const KNAME = { cpu: 'CPU', mem: 'Memory', disk: 'Disk' };
+  const card = k => q(`.gcard[data-k="${k}"]`);
+  const pctOf = (u, t) => (t ? (u / t) * 100 : null);
+  function setGauge(k, pct) {
+    const g = card(k);
+    const val = pct == null || !Number.isFinite(pct) ? null : Math.max(0, Math.min(100, pct));
+    g.querySelector('.gtrack').style.strokeDasharray = `${ARC} ${RING}`;
+    g.querySelector('.gbar').style.strokeDasharray = `${ARC * (val ?? 0) / 100} ${RING}`;
+    g.classList.toggle('hot', val >= 90);
+    g.classList.toggle('warm', val >= 70 && val < 90);
+    g.querySelector('.gval b').textContent = val == null ? '—' : (val < 10 ? val.toFixed(1) : Math.round(val)) + '%';
+  }
+  const fmtMem = b => (b == null ? '—' : b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : (b / 1e6).toFixed(0) + ' MB');
+  const fmtDisk = b => (b == null ? '—' : b >= 1e12 ? (b / 1e12).toFixed(1) + 'T' : b >= 1e9 ? (b / 1e9).toFixed(1) + 'G' : (b / 1e6).toFixed(0) + 'M');
+  const span = (cls, text) => el('span', { className: cls, textContent: text });
+
+  // Alerts: off until the user turns one on. Checked on every metrics poll (5 s) while connected,
+  // even when this server isn't on screen. One notification per crossing; re-arms 5 points below.
+  v.alerts = { cpu: { on: false, threshold: 90 }, mem: { on: false, threshold: 90 }, disk: { on: false, threshold: 90 }, ...(s.alerts || {}) };
+  v.hasAlerts = () => Object.values(v.alerts).some(a => a.on);
+  const firing = {};
+  function renderAlertBtns() {
+    for (const k of ['cpu', 'mem', 'disk']) {
+      const a = v.alerts[k], b = card(k).querySelector('.galert');
+      b.textContent = a.on ? `🔔 Alert > ${a.threshold}%` : '🔔 Set alert';
+      b.classList.toggle('on', a.on);
+      card(k).classList.toggle('alerting', !!(a.on && firing[k]));
+    }
+  }
+  function checkAlerts(vals) {
+    for (const k of ['cpu', 'mem', 'disk']) {
+      const a = v.alerts[k], val = vals[k];
+      if (!a.on || val == null) { firing[k] = false; continue; }
+      if (val >= a.threshold && !firing[k]) {
+        firing[k] = true;
+        const msg = `${s.name}: ${KNAME[k]} at ${Math.round(val)}% (alert above ${a.threshold}%)`;
+        toast('🔔 ' + msg, true);
+        try { new Notification('EranTerm alert', { body: msg }); } catch { /* notifications blocked */ }
+      } else if (val < a.threshold - 5) firing[k] = false;
+    }
+    renderAlertBtns();
+  }
+  for (const k of ['cpu', 'mem', 'disk']) {
+    card(k).querySelector('.galert').onclick = async () => {
+      const a = v.alerts[k];
+      const on = el('input', { type: 'checkbox', checked: a.on });
+      const th = el('input', { type: 'number', min: 1, max: 99, value: a.threshold, className: 'num' });
+      const okd = await ask({
+        title: `${KNAME[k]} alert — ${s.name}`, ok: 'Save',
+        body: [
+          el('label', { className: 'row' }, on, ` Alert me when ${KNAME[k]} usage is above`),
+          el('label', { className: 'row' }, th, ' %'),
+          el('p', { className: 'hint', textContent: 'Checked every 5 s while this server is connected (also when you are on another tab). You get one notification each time it crosses the limit.' }),
+        ],
+      });
+      if (!okd) return;
+      v.alerts = await api.servers.setAlerts(s.id, { ...v.alerts, [k]: { on: on.checked, threshold: th.value } });
+      s.alerts = v.alerts;
+      firing[k] = false;
+      renderAlertBtns();
+      toast(v.alerts[k].on ? `${KNAME[k]} alert on: above ${v.alerts[k].threshold}%` : `${KNAME[k]} alert off`);
+    };
+  }
+  renderAlertBtns();
+
+  // ---- load + render ----
+  v.stSort = 'cpu';
+  let statsBusy = false, last = null;
+  async function loadStats() {
+    if (!v.connId || statsBusy) return;
+    statsBusy = true;
+    q('.stReload').disabled = true;
+    q('.stTime').textContent = 'measuring…';
+    try {
+      const [m, t] = await Promise.all([api.ssh.metrics(v.connId), api.ssh.top(v.connId, v.stSort)]);
+      last = { m, t };
+      const memPct = pctOf(m.memUsed, m.memTotal), diskPct = pctOf(m.diskUsed, m.diskTotal);
+      setGauge('cpu', m.cpu); setGauge('mem', memPct); setGauge('disk', diskPct);
+      q('.gUptime').textContent = t.uptime || '—';
+      q('.gCores').replaceChildren(...(t.cores ? ['CPU cores: ', el('b', { textContent: t.cores })] : []),
+        ...(t.load ? [`   ·   Load ${t.load.map(x => x.toFixed(2)).join(' / ')}`] : []));
+      q('.gMemUsed').replaceChildren(fmtMem(m.memUsed), span('muted', ` / ${fmtMem(m.memTotal)}`));
+      q('.gMemAvail').textContent = fmtMem(t.memAvail ?? (m.memTotal != null ? m.memTotal - m.memUsed : null));
+      q('.gSwap').textContent = t.swapTotal ? `${fmtMem(t.swapUsed)} / ${fmtMem(t.swapTotal)}` : 'none';
+      q('.gDiskUsed').replaceChildren(fmtDisk(m.diskUsed), span('muted', ` / ${fmtDisk(m.diskTotal)}`));
+      q('.gDiskAvail').textContent = fmtDisk(m.diskTotal != null ? m.diskTotal - m.diskUsed : null);
+      q('.stinfo').textContent = t.procs.length ? `top ${t.procs.length} by ${v.stSort === 'mem' ? 'memory' : 'CPU'}` : '';
+      renderProcs(t.procs);
+      checkAlerts({ cpu: m.cpu, mem: memPct, disk: diskPct });
+      q('.stTime').textContent = 'measured ' + new Date().toLocaleTimeString();
+    } catch (err) {
+      q('.stTime').textContent = '';
+      toast(`Metrics: ${cleanErr(err)}`, true);
+    } finally {
+      statsBusy = false;
+      q('.stReload').disabled = false;
+    }
+  }
+  const bar = pct => el('span', { className: 'pbar' }, el('i', { style: `width:${Math.min(100, Math.max(0, pct))}%` }));
+  function renderProcs(procs) {
+    for (const th of root.querySelectorAll('.sttable th.sortable')) {
+      th.classList.toggle('on', th.dataset.sort === v.stSort);
+      th.querySelector('.sorti').textContent = th.dataset.sort === v.stSort ? '▼' : '⇅';
+    }
+    if (!procs.length) {
+      q('.stRows').replaceChildren(el('tr', {}, el('td', { colSpan: 5, className: 'muted', textContent: 'No process list (ps not available on this server).' })));
+      return;
+    }
+    q('.stRows').replaceChildren(...procs.map(p => {
+      const name = p.command.split('/').pop() || p.command; // macOS ps shows full paths
+      return el('tr', {},
+        el('td', { className: 'r mono', textContent: p.pid }),
+        el('td', { className: 'pname', title: `${p.command}\nuser: ${p.user} · RSS ${fmtMem(p.rss)}` },
+          el('b', { textContent: name }), span('muted puser', p.user)),
+        el('td', { className: 'pcell' }, span('mono pv' + (p.cpu >= 50 ? ' hotv' : ''), p.cpu.toFixed(1) + '%'), bar(p.cpu)),
+        el('td', { className: 'pcell mem' }, span('mono pv', p.mem.toFixed(1) + '%'), bar(p.mem)),
+        el('td', { className: 'r' }, iconBtn('🗑', `End process ${p.pid}`, () => killProc(p), 'icon danger pkill')));
+    }));
+  }
+  for (const th of root.querySelectorAll('.sttable th.sortable')) {
+    th.onclick = () => { v.stSort = th.dataset.sort; loadStats(); };
+  }
+
+  async function killProc(p) {
+    const force = el('input', { type: 'checkbox' });
+    const okd = await ask({
+      title: `End process ${p.pid}?`, ok: 'End process', danger: true,
+      body: [
+        el('p', { className: 'mono actcmd', textContent: p.command }),
+        el('p', { className: 'hint', textContent: `User ${p.user} · CPU ${p.cpu}% · Memory ${p.mem}%. Sends SIGTERM so it can shut down cleanly. Uses sudo if the process isn't yours.` }),
+        el('label', { className: 'row' }, force, ' Force kill (SIGKILL) — stops it immediately, no clean-up'),
+      ],
+    });
+    if (!okd) return;
+    try {
+      await api.ssh.kill(v.connId, p.pid, force.checked);
+      toast(`Sent ${force.checked ? 'SIGKILL' : 'SIGTERM'} to ${p.pid} (${p.command.split('/').pop()})`);
+      setTimeout(loadStats, 800);
+    } catch (err) { toast(`Kill ${p.pid}: ${cleanErr(err)}`, true); }
+  }
+
+  q('.memClear').onclick = async () => {
+    const okd = await ask({
+      title: `Clear cache / buffers on ${s.name}?`, ok: 'Clear cache',
+      body: [
+        el('p', { textContent: 'Frees memory used for cached file data (Linux: sync + drop_caches, macOS: purge). Running programs keep their memory; nothing is deleted.' }),
+        el('p', { className: 'hint', textContent: 'Disk reads are slower for a while as the cache refills. Needs root (sudo).' }),
+      ],
+    });
+    if (!okd) return;
+    const before = last?.t.memAvail;
+    const btn = q('.memClear');
+    btn.disabled = true;
+    try {
+      await api.maint.dropCaches(v.connId);
+      await loadStats();
+      const after = last?.t.memAvail;
+      toast('Cache cleared.' + (before != null && after != null ? ` Available memory ${fmtMem(before)} → ${fmtMem(after)}.` : ''));
+    } catch (err) { toast(`Clear cache: ${cleanErr(err)}`, true); }
+    finally { btn.disabled = false; }
+  };
+
+  // Disk clean: scan first (shows what each category would free), user picks, then delete.
+  q('.diskClean').onclick = async () => {
+    const list = el('div', { className: 'cleanlist' }, el('p', { className: 'muted', textContent: 'Scanning… (measuring what can be freed)' }));
+    const total = el('p', { className: 'hint' });
+    const boxes = [];
+    const sumSel = () => {
+      const n = boxes.filter(b => b.chk.checked).reduce((x, b) => x + (b.bytes || 0), 0);
+      total.textContent = `Selected: about ${fmtDisk(n)} to free. Deleted files can't be recovered.`;
+      $('#actDlg .actOk').disabled = !boxes.some(b => b.chk.checked);
+    };
+    const pending = ask({ title: `Clean disk on ${s.name}`, ok: 'Delete selected', danger: true, okDisabled: true,
+      body: [list, total, el('p', { className: 'hint', textContent: 'Only these fixed locations are touched; current logs and recent temp files are kept. Needs root (sudo) for system folders.' })] });
+    api.maint.scanDisk(v.connId).then(items => {
+      list.replaceChildren(...items.map(i => {
+        const chk = el('input', { type: 'checkbox', checked: i.id !== 'pkg' && (i.bytes ?? 0) > 0, onchange: sumSel });
+        boxes.push({ id: i.id, chk, bytes: i.bytes });
+        return el('label', { className: 'row cleanitem' }, chk,
+          el('span', { className: 'grow' }, el('b', { textContent: i.label }), el('small', { className: 'muted', textContent: i.detail })),
+          el('span', { className: 'mono', textContent: i.bytes == null ? '?' : fmtDisk(i.bytes) }));
+      }));
+      sumSel();
+    }).catch(err => list.replaceChildren(el('p', { className: 'error', textContent: `Scan failed: ${cleanErr(err)}` })));
+    if (!(await pending)) return;
+    const ids = boxes.filter(b => b.chk.checked).map(b => b.id);
+    if (!ids.length) return;
+    const before = last?.m.diskUsed;
+    const btn = q('.diskClean');
+    btn.disabled = true;
+    toast('Cleaning disk…');
+    try {
+      await api.maint.cleanDisk(v.connId, ids);
+      await loadStats();
+      const after = last?.m.diskUsed;
+      toast('Disk cleaned.' + (before != null && after != null ? ` Freed about ${fmtDisk(Math.max(0, before - after))}.` : ''));
+    } catch (err) { toast(`Clean disk: ${cleanErr(err)}`, true); }
+    finally { btn.disabled = false; }
+  };
+
+  q('.stReload').onclick = loadStats;
+  let statsTimer = null;
+  q('.stAuto').onchange = () => {
+    clearInterval(statsTimer);
+    const ms = Number(q('.stAuto').value);
+    // only while this server page and its Metrics tab are on screen
+    statsTimer = ms ? setInterval(() => { if (v.panel === 'stats' && !root.hidden) loadStats(); }, ms) : null;
+  };
+  v.checkAlerts = checkAlerts;
 
   // ---- lifecycle ----
   v.onShow = () => { if (v.panel === 'term') active?.t.term.focus(); };
@@ -1052,6 +1435,7 @@ async function openServer(s) {
     if (msg) toast(`${s.name}: ${msg}`, true);
   };
   v.dispose = () => {
+    clearInterval(statsTimer);
     stopTail();
     sideTerm?.dispose();
     for (const x of [...sessions]) closeSession(x);
@@ -1081,9 +1465,9 @@ async function openServer(s) {
   v.pollMetrics();
 }
 
-// Poll metrics only for the server page on screen.
+// Poll metrics for the server page on screen, plus background servers that have an alert switched on.
 setInterval(() => {
-  for (const v of views.values()) if (!v.root.hidden && v.connId) v.pollMetrics();
+  for (const v of views.values()) if (v.connId && (!v.root.hidden || v.hasAlerts?.())) v.pollMetrics();
 }, 5000);
 
 refreshServers();

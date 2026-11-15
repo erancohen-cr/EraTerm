@@ -9,6 +9,98 @@ function logLevel(line) {
   return '';
 }
 
+// Timestamp of a log line in ms, or null. Looks only near the start so dates inside messages don't count.
+// ponytail: ISO / syslog / Apache formats only; add patterns here as new log formats show up.
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function parseLogTime(line, now = Date.now()) {
+  const head = String(line).slice(0, 64);
+  let m = head.match(/(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(?:[.,]\d+)?\s*(Z|[+-]\d\d:?\d\d)?/);
+  if (m) {
+    const tz = m[7] ? (m[7] === 'Z' ? 'Z' : m[7].replace(/^([+-]\d\d):?(\d\d)$/, '$1:$2')) : '';
+    const t = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${tz}`); // no tz = local time
+    return Number.isNaN(t) ? null : t;
+  }
+  m = head.match(/(\d\d)\/([A-Za-z]{3})\/(\d{4}):(\d\d):(\d\d):(\d\d)(?: ([+-])(\d\d)(\d\d))?/); // Apache
+  if (m && m[2].toLowerCase() in MONTHS) {
+    const mon = MONTHS[m[2].toLowerCase()];
+    if (!m[7]) return new Date(+m[3], mon, +m[1], +m[4], +m[5], +m[6]).getTime();
+    const off = (m[7] === '-' ? -1 : 1) * (+m[8] * 60 + +m[9]) * 60000;
+    return Date.UTC(+m[3], mon, +m[1], +m[4], +m[5], +m[6]) - off;
+  }
+  m = head.match(/\b([A-Za-z]{3})\s+(\d{1,2}) (\d\d):(\d\d):(\d\d)\b/); // syslog: no year, local time
+  if (m && m[1].toLowerCase() in MONTHS) {
+    const y = new Date(now).getFullYear();
+    const at = yr => new Date(yr, MONTHS[m[1].toLowerCase()], +m[2], +m[3], +m[4], +m[5]).getTime();
+    return at(y) > now + 86400000 ? at(y - 1) : at(y); // "Dec 31" read in January is last year
+  }
+  return null;
+}
+
+// Log row visibility: must pass the time window, the level buttons and (in "only matches" mode) the search.
+// t = line timestamp or null (lines without one always pass the time filter); levels empty = all.
+function logRowVisible({ t, lv, text }, { cutoff = 0, levels = new Set(), term = '', onlyMatches = false }) {
+  if (cutoff && t != null && t < cutoff) return false;
+  if (levels.size && !levels.has(lv)) return false;
+  return !(onlyMatches && term && !text.includes(term));
+}
+
+// File manager entry kind → icon + color. mode = POSIX mode bits from SFTP (may be missing).
+const SCRIPT_EXT = /\.(sh|bash|zsh|ksh|fish|py|pl|rb|php|js|mjs|ts|lua|ps1|bat|cmd|command|run|bin|appimage)$/i;
+const TEXT_EXT = /\.(txt|log|md|markdown|rst|conf|cfg|cnf|ini|toml|ya?ml|json|xml|csv|tsv|env|properties|service|socket|timer|html?|css|sql|out|err|pem|crt|key|pub|lock|gitignore|dockerignore|editorconfig)$/i;
+const TEXT_NAMES = /^(\.?[\w-]*rc|\.profile|\.bash_\w+|\.zprofile|Makefile|Dockerfile|Vagrantfile|Procfile|README|LICENSE|CHANGELOG|hosts|passwd|group|fstab|crontab|authorized_keys|known_hosts|config)$/i;
+const ARCHIVE_EXT = /\.(tar|tgz|gz|bz2|xz|zst|zip|7z|rar|rpm|deb|apk|dmg|pkg|iso|jar|war)$/i;
+const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|svg|webp|ico|tiff?|heic)$/i;
+function fileKind({ name, type, mode, link }) {
+  if (type === 'dir') return 'dir';
+  if (SCRIPT_EXT.test(name) || (mode != null && (mode & 0o111))) return 'exec';
+  if (TEXT_EXT.test(name) || TEXT_NAMES.test(name)) return 'text';
+  if (ARCHIVE_EXT.test(name)) return 'archive';
+  if (IMAGE_EXT.test(name)) return 'image';
+  if (link) return 'link';
+  return 'file';
+}
+
+// ---------- AI providers ----------
+// models = suggestions only; any model name can be typed (provider catalogs change often).
+const AI_PROVIDERS = {
+  anthropic: { label: 'Claude (Anthropic)', env: 'ANTHROPIC_API_KEY', models: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'] },
+  openai: { label: 'ChatGPT (OpenAI)', env: 'OPENAI_API_KEY', models: ['gpt-5', 'gpt-5-mini'] },
+  gemini: { label: 'Gemini (Google)', env: 'GEMINI_API_KEY', models: ['gemini-2.5-pro', 'gemini-2.5-flash'] },
+};
+const validModel = m => /^[\w.:-]{1,80}$/.test(String(m)); // also keeps the Gemini URL path safe
+
+// One request shape per provider. Reasoning models spend output tokens on thinking, hence the floor.
+function buildAiRequest(provider, { key, model, system, content, maxTokens }) {
+  if (!AI_PROVIDERS[provider]) throw new Error(`Unknown AI provider: ${provider}`);
+  if (!validModel(model)) throw new Error(`Invalid model name: ${model}`);
+  const json = { 'content-type': 'application/json' };
+  if (provider === 'anthropic') return {
+    url: 'https://api.anthropic.com/v1/messages',
+    headers: { ...json, 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    body: { model, max_tokens: maxTokens, system, messages: [{ role: 'user', content }] },
+  };
+  if (provider === 'openai') return {
+    url: 'https://api.openai.com/v1/chat/completions',
+    headers: { ...json, authorization: `Bearer ${key}` },
+    body: { model, max_completion_tokens: Math.max(maxTokens, 4096), messages: [{ role: 'system', content: system }, { role: 'user', content }] },
+  };
+  return {
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    headers: { ...json, 'x-goog-api-key': key },
+    body: {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: content }] }],
+      generationConfig: { maxOutputTokens: Math.max(maxTokens, 4096) },
+    },
+  };
+}
+
+function parseAiResponse(provider, body) {
+  if (provider === 'anthropic') return (body.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  if (provider === 'openai') return body.choices?.[0]?.message?.content || '';
+  return (body.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+}
+
 // .rdp files are line-based "key:type:value"; strip newlines so a value can't inject extra settings.
 // No password: macOS Windows App can't read one from a file; it prompts and keeps it in its keychain.
 function buildRdp({ host, port, username, domain }) {
@@ -33,4 +125,7 @@ function remoteDir(d) {
   return shq(d);
 }
 
-if (typeof module !== 'undefined') module.exports = { shq, logLevel, buildRdp, remoteDir };
+if (typeof module !== 'undefined') module.exports = {
+  shq, logLevel, parseLogTime, logRowVisible, fileKind, buildRdp, remoteDir,
+  AI_PROVIDERS, validModel, buildAiRequest, parseAiResponse,
+};

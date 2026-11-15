@@ -87,7 +87,85 @@
           <button class="navitem" data-panel="files" title="File Manager"><i>▭</i><span class="lbl">File Manager</span></button>
           <button class="navitem" data-panel="term" title="Terminal"><i>›_</i><span class="lbl">Terminal</span></button>
           <button class="navitem" data-panel="logs" title="Logs"><i>≡</i><span class="lbl">Logs</span></button>
+          <button class="navitem" data-panel="stats" title="Metrics"><i>◔</i><span class="lbl">Metrics</span></button>
         </aside>
+
+        <!-- Metrics (measured when the tab opens; reload / auto-refresh) -->
+        <div class="panel stats" hidden>
+          <div class="stwrap">
+            <div class="sthead">
+              <h2>System Resources</h2>
+              <span class="stTime muted mono"></span>
+              <span class="grow"></span>
+              <select class="stAuto" title="Refresh automatically while this tab is open">
+                <option value="0">Auto-refresh off</option><option value="5000">Every 5 s</option>
+                <option value="10000">Every 10 s</option><option value="30000">Every 30 s</option>
+              </select>
+              <button class="stReload" title="Measure again">⟳ Refresh Metrics</button>
+            </div>
+            <div class="gauges">
+              <!-- CPU -->
+              <section class="gcard g-cpu" data-k="cpu">
+                <header class="ghead">
+                  <svg class="gicon" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+                  <div><small>PROCESSOR</small><b>CPU Usage</b></div>
+                </header>
+                <div class="gring"><svg viewBox="0 0 100 100"><circle class="gtrack" cx="50" cy="50" r="42"/><circle class="gbar" cx="50" cy="50" r="42"/></svg>
+                  <div class="gval"><b>—</b><small>Load</small></div></div>
+                <div class="gfoot">
+                  <div class="gfrow"><span class="glabel">⏱ System uptime</span><button class="galert" title="Notify me when CPU goes above a limit">🔔 Set alert</button></div>
+                  <b class="gmain gUptime">—</b>
+                  <small class="gsub gCores"></small>
+                </div>
+              </section>
+              <!-- Memory -->
+              <section class="gcard g-mem" data-k="mem">
+                <header class="ghead">
+                  <svg class="gicon" viewBox="0 0 24 24"><path d="M3 8h18v9H3z M7 8V5 M12 8V5 M17 8V5 M7 17v2 M12 17v2 M17 17v2 M7 11.5h3v2H7z M14 11.5h3v2h-3z"/></svg>
+                  <div><small>MEMORY</small><b>RAM Status</b></div>
+                  <span class="grow"></span>
+                  <button class="gaction memClear icon" title="Clear cache / buffers">
+                    <svg viewBox="0 0 24 24"><path d="M14 3 20 9 M9 8l7 7 M4 20l5-12 7 7-12 5z M7 16l1 1"/></svg></button>
+                </header>
+                <div class="gring"><svg viewBox="0 0 100 100"><circle class="gtrack" cx="50" cy="50" r="42"/><circle class="gbar" cx="50" cy="50" r="42"/></svg>
+                  <div class="gval"><b>—</b><small>Used</small></div></div>
+                <div class="gfoot">
+                  <div class="gfrow"><span class="glabel">▤ Used memory</span><button class="galert" title="Notify me when memory goes above a limit">🔔 Set alert</button></div>
+                  <b class="gmain gMemUsed">—</b>
+                  <div class="gsplit"><small>Available: <b class="ok gMemAvail">—</b></small><small>Swap: <b class="gSwap">—</b></small></div>
+                </div>
+              </section>
+              <!-- Disk -->
+              <section class="gcard g-disk" data-k="disk">
+                <header class="ghead">
+                  <svg class="gicon" viewBox="0 0 24 24"><path d="M5 3h14v18H5z M5 9h14 M5 15h14 M8 6h3 M8 12h3 M8 18h3"/></svg>
+                  <div><small>STORAGE</small><b>Root Disk</b></div>
+                  <span class="grow"></span>
+                  <button class="gaction diskClean icon" title="Clean disk (temp files / old logs)">
+                    <svg viewBox="0 0 24 24"><path d="M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6"/></svg></button>
+                </header>
+                <div class="gring"><svg viewBox="0 0 100 100"><circle class="gtrack" cx="50" cy="50" r="42"/><circle class="gbar" cx="50" cy="50" r="42"/></svg>
+                  <div class="gval"><b>—</b><small>Used</small></div></div>
+                <div class="gfoot">
+                  <div class="gfrow"><span class="glabel">▤ Used space</span><button class="galert" title="Notify me when the disk goes above a limit">🔔 Set alert</button></div>
+                  <b class="gmain gDiskUsed">—</b>
+                  <div class="gsplit"><small>Available: <b class="ok gDiskAvail">—</b></small></div>
+                </div>
+              </section>
+            </div>
+
+            <h3 class="sth"><span>⊞</span> Top Processes <small class="stinfo muted mono"></small></h3>
+            <table class="grid sttable">
+              <thead><tr>
+                <th class="r">PID</th><th>Process</th>
+                <th class="sortable" data-sort="cpu" title="Sort by CPU">CPU % <i class="sorti"></i></th>
+                <th class="sortable" data-sort="mem" title="Sort by memory">Memory % <i class="sorti"></i></th>
+                <th></th>
+              </tr></thead>
+              <tbody class="stRows"></tbody>
+            </table>
+          </div>
+        </div>
 
         <!-- File manager -->
         <div class="panel files" hidden>
@@ -133,9 +211,11 @@
           <div class="thosts"><p class="tempty empty" hidden>No open sessions. Click ＋ to start one.</p></div>
           <section class="ai">
             <form class="aiForm">
-              <input class="aiInput" placeholder="Ask AI: e.g. show the 5 largest files in /var/log" autocomplete="off">
-              <button>Suggest</button>
+              <input class="aiInput" placeholder="Ask AI: e.g. show the 5 largest files in /var/log — or ask about the output" autocomplete="off">
+              <button class="aiSuggest" title="Turn your request into a command (runs only after you approve)">Suggest command</button>
+              <button type="button" class="aiAsk" title="Ask about what's on the terminal screen (recent output)">✦ Ask about output</button>
             </form>
+            <div class="aiOut tAiOut" hidden></div>
             <div class="aiResult" hidden>
               <label>Command (editable) <span class="aiRisk"></span></label>
               <input class="aiCmd mono" spellcheck="false">
@@ -179,25 +259,53 @@
             <form class="ladd"><input class="mono" placeholder="/var/log/syslog" required><button class="primary">＋</button></form>
           </aside>
           <div class="lview">
-            <div class="toolbar">
-              <b class="lname">Select a log source</b>
-              <span class="grow"></span>
-              <input class="lsearch search" placeholder="Search logs…">
-              <select class="lmode" title="Search mode">
-                <option value="mark">Highlight matches</option>
-                <option value="filter">Only matching lines</option>
-              </select>
-              <select class="llines" title="Lines to load">
-                <option value="200">200 lines</option><option value="500" selected>500 lines</option>
-                <option value="1000">1000 lines</option><option value="5000">5000 lines</option>
-              </select>
-              <button class="lrefresh icon" title="Reload">⟳</button>
-              <button class="lclear icon" title="Clear screen (the file is not changed; Live keeps adding new lines)">⌫</button>
-              <button class="llive" title="Start / stop tailing">● Live</button>
-              <button class="ldl icon" title="Download full log file">⤓</button>
+            <div class="lhead">
+              <div class="lline1">
+                <b class="lname">Select a log source</b>
+                <span class="lpath mono"></span>
+                <button class="lcopy icon" title="Copy file path" hidden>⧉</button>
+                <span class="lstat muted"></span>
+              </div>
+              <div class="lline2">
+                <select class="llines" title="Lines to load">
+                  <option value="200">lines 200</option><option value="500" selected>lines 500</option>
+                  <option value="1000">lines 1000</option><option value="5000">lines 5000</option>
+                </select>
+                <select class="lsince" title="Show only lines newer than this (by the line's timestamp)">
+                  <option value="0">since All</option><option value="600000">since 10 min</option>
+                  <option value="3600000">since 1 h</option><option value="21600000">since 6 h</option>
+                  <option value="86400000">since 24 h</option><option value="604800000">since 7 days</option>
+                </select>
+                <span class="llevels" title="Show only these levels (none selected = all)">
+                  <button class="lv info" data-lv="info">INFO <small></small></button>
+                  <button class="lv warn" data-lv="warn">WARN <small></small></button>
+                  <button class="lv error" data-lv="error">ERR <small></small></button>
+                  <button class="lv debug" data-lv="debug">DBG <small></small></button>
+                </span>
+                <input class="lsearch search" placeholder="Search logs…">
+                <select class="lmode" title="Search mode: highlight matches, or show only matching lines">
+                  <option value="mark">Mark</option>
+                  <option value="filter">Filter</option>
+                </select>
+                <span class="lacts">
+                  <button class="laiBtn" title="Ask AI about the lines shown (after filters)">✦ Ask AI</button>
+                  <button class="llive" title="Start / stop tailing">● Live</button>
+                  <button class="lrefresh icon" title="Reload">⟳</button>
+                  <button class="lclear icon" title="Clear screen (the file is not changed; Live keeps adding new lines)">⌫</button>
+                  <button class="ldl icon" title="Download full log file">⤓</button>
+                </span>
+              </div>
             </div>
+            <section class="aibox lai" hidden>
+              <form class="laiForm">
+                <input class="laiQ" placeholder="Ask about these logs — e.g. why is the service failing? (blank = general analysis)" autocomplete="off">
+                <button class="primary">Analyze</button>
+                <button type="button" class="laiClose icon" title="Close">×</button>
+              </form>
+              <small class="laiNote muted"></small>
+              <div class="aiOut" hidden></div>
+            </section>
             <div class="lbody mono"></div>
-            <footer class="statusbar mono"><span class="lpath"></span><span class="grow"></span><span class="lstat"></span></footer>
           </div>
         </div>
       </div>
@@ -269,14 +377,29 @@
     </form>
   </dialog>
 
+  <!-- generic confirm / small form, filled by ask() in renderer.js -->
+  <dialog id="actDlg">
+    <form method="dialog" id="actForm">
+      <h3 class="actTitle"></h3>
+      <div class="actBody"></div>
+      <menu><button value="cancel" formnovalidate>Cancel</button><button value="ok" class="actOk"></button></menu>
+    </form>
+  </dialog>
+
   <dialog id="settingsDlg">
     <form method="dialog" id="settingsForm">
       <h3>Settings</h3>
       <label>Theme
         <select name="theme"><option value="system">System (follow macOS)</option><option value="light">Light</option><option value="dark">Dark</option></select>
       </label>
-      <p id="keyStatus"></p>
-      <label>Anthropic API key <input name="apiKey" type="password" placeholder="sk-ant-…"></label>
+      <h4 class="dlgsec">AI configuration</h4>
+      <label>Provider <select name="aiProvider"></select></label>
+      <p id="keyStatus" class="hint"></p>
+      <label><span id="keyLabel">API key</span> <input name="apiKey" type="password" placeholder="leave blank to keep the saved key" autocomplete="off"></label>
+      <label class="row"><input name="clearKey" type="checkbox"> Remove the saved key for this provider</label>
+      <label>Model <input name="aiModel" list="aiModelList" spellcheck="false" autocomplete="off"></label>
+      <datalist id="aiModelList"></datalist>
+      <p class="hint">Used by Ask AI in Terminal and Logs. Each provider keeps its own key, encrypted with your macOS Keychain. Logs and terminal text are sent to the selected provider only when you click Ask AI.</p>
       <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
     </form>
   </dialog>

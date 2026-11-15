@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('api', {
     save: s => ipcRenderer.invoke('servers:save', s),
     delete: id => ipcRenderer.invoke('servers:delete', id),
     setLogPaths: (id, paths) => ipcRenderer.invoke('servers:setLogPaths', id, paths),
+    setAlerts: (id, alerts) => ipcRenderer.invoke('servers:setAlerts', id, alerts),
   },
   users: {
     list: () => ipcRenderer.invoke('users:list'),
@@ -17,7 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
-    setApiKey: k => ipcRenderer.invoke('settings:setApiKey', k),
+    setAi: a => ipcRenderer.invoke('settings:setAi', a), // { provider, key?, model }
   },
   ssh: {
     connect: serverId => ipcRenderer.invoke('ssh:connect', serverId),
@@ -27,9 +28,16 @@ contextBridge.exposeInMainWorld('api', {
     resize: (id, c, r) => ipcRenderer.send('ssh:resize', id, c, r),
     closeShell: id => ipcRenderer.send('ssh:closeShell', id),
     metrics: connId => ipcRenderer.invoke('ssh:metrics', connId),
+    top: (connId, sortBy) => ipcRenderer.invoke('ssh:top', connId, sortBy),
+    kill: (connId, pid, force) => ipcRenderer.invoke('ssh:kill', connId, pid, force),
     onData: on('ssh:data'),
     onClosed: on('ssh:closed'),
     onConnClosed: on('ssh:connClosed'),
+  },
+  maint: {
+    dropCaches: connId => ipcRenderer.invoke('maint:dropCaches', connId),
+    scanDisk: connId => ipcRenderer.invoke('maint:scanDisk', connId),
+    cleanDisk: (connId, ids) => ipcRenderer.invoke('maint:cleanDisk', connId, ids),
   },
   sftp: {
     list: (connId, dir) => ipcRenderer.invoke('sftp:list', connId, dir),
@@ -65,5 +73,8 @@ contextBridge.exposeInMainWorld('api', {
   },
   rdp: { open: serverId => ipcRenderer.invoke('rdp:open', serverId) },
   remote: { open: serverId => ipcRenderer.invoke('remote:open', serverId) },
-  ai: { suggest: (connId, req) => ipcRenderer.invoke('ai:suggest', connId, req) },
+  ai: {
+    suggest: (connId, req) => ipcRenderer.invoke('ai:suggest', connId, req),
+    analyze: (connId, a) => ipcRenderer.invoke('ai:analyze', connId, a), // { kind: 'logs'|'terminal', question, text, source }
+  },
 });
