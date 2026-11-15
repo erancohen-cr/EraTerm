@@ -74,4 +74,22 @@ while ($true) {
 
 const stripHeartbeat = s => s.replace(new RegExp(`${HEARTBEAT}\\r?\\n`, 'g'), '');
 
-module.exports = { readCmd, tailCmd, stripHeartbeat, isEventLog, winPath, psQuote, psEncode, HEARTBEAT };
+// ---------- other Windows file operations (File Manager) ----------
+// Delete a file or folder tree. Refuses drive roots and empty paths.
+function removeCmd(target) {
+  if (typeof target !== 'string' || !target.trim()) throw new Error('Refusing to delete an empty path');
+  const p = winPath(target.trim()).replace(/[\\/]+$/, '');
+  if (!p || /^[A-Za-z]:$/.test(p) || p === '/' || p === '\\') throw new Error(`Refusing to delete ${target || 'an empty path'}`);
+  return psCommand(PRELUDE + `Remove-Item -LiteralPath ${psQuote(p)} -Recurse -Force`);
+}
+// Folder → tar.gz on stdout with Windows' built-in tar.exe (Windows 10 1803+ / Server 2019+). Run through
+// `cmd /c` so the bytes pass through untouched whether the SSH shell is cmd or PowerShell.
+function tarDirCmd(dir) {
+  const p = winPath(dir).replace(/[\\/]+$/, '');
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  const parent = i > 2 ? p.slice(0, i) : p.slice(0, i + 1), name = p.slice(i + 1);
+  if (!name || /["%^&|<>]/.test(p)) throw new Error(`Cannot archive ${dir}`); // cmd metacharacters: refuse rather than escape
+  return `cmd /c tar -czf - -C "${parent}" "${name}"`;
+}
+
+module.exports = { readCmd, tailCmd, stripHeartbeat, isEventLog, winPath, psQuote, psEncode, psCommand, removeCmd, tarDirCmd, HEARTBEAT };

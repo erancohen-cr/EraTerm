@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('api', {
     onData: on('ssh:data'),
     onClosed: on('ssh:closed'),
     onConnClosed: on('ssh:connClosed'),
+    onHostKeyReplaced: on('ssh:hostKeyReplaced'),
   },
   maint: {
     dropCaches: connId => ipcRenderer.invoke('maint:dropCaches', connId),

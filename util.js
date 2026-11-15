@@ -123,6 +123,18 @@ function parseAiResponse(provider, body) {
   return (body.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
 }
 
+// SSH host keys, saved per server entry together with the address they were seen at.
+// prev: what's stored (older builds stored just the fingerprint string). Changed keys are replaced
+// automatically (user choice); `replaced` says so, and `moved` tells a new address apart from the
+// same address presenting a new key (reinstall — or interception, hence the warning in the UI).
+function hostKeyDecision(prev, addr, fp) {
+  const old = typeof prev === 'string' ? { fp: prev, addr: '' } : prev || null;
+  const store = { addr, fp };
+  if (!old) return { store, replaced: false, moved: false, first: true };
+  if (old.fp === fp) return { store, replaced: false, moved: false, first: false };
+  return { store, replaced: true, moved: !!old.addr && old.addr !== addr, oldFp: old.fp, oldAddr: old.addr, first: false };
+}
+
 // .rdp files are line-based "key:type:value"; strip newlines so a value can't inject extra settings.
 // No password: macOS Windows App can't read one from a file; it prompts and keeps it in its keychain.
 function buildRdp({ host, port, username, domain }) {
@@ -149,5 +161,5 @@ function remoteDir(d) {
 
 if (typeof module !== 'undefined') module.exports = {
   shq, logLevel, parseLogTime, logRowVisible, fileKind, buildRdp, remoteDir,
-  AI_PROVIDERS, validModel, normModel, buildAiRequest, parseAiResponse, buildModelsRequest, parseModels,
+  AI_PROVIDERS, validModel, normModel, buildAiRequest, parseAiResponse, buildModelsRequest, parseModels, hostKeyDecision,
 };

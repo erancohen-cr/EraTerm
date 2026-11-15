@@ -9,7 +9,7 @@ const { StringDecoder } = require('node:string_decoder');
 const { METRICS_CMD, parseMetrics, TOP_CMD, parseTop } = require('./metrics');
 const { killCmd, DROP_CACHES_CMD, SCAN_CMD, parseScan, cleanCmd } = require('./maint');
 const winlogs = require('./winlogs');
-const { shq, buildRdp, remoteDir, AI_PROVIDERS, validModel, normModel, buildAiRequest, parseAiResponse, buildModelsRequest, parseModels } = require('./util');
+const { shq, buildRdp, remoteDir, AI_PROVIDERS, validModel, normModel, buildAiRequest, parseAiResponse, buildModelsRequest, parseModels, hostKeyDecision } = require('./util');
 const { runDeployment } = require('./deploy');
 
 const rpath = path.posix;
@@ -168,8 +168,13 @@ const exec = (conn, cmd, check = false) => new Promise((resolve, reject) => {
 });
 
 // The server's OS picks its desktop protocol: RDP for Windows, Screen Sharing (VNC) for the rest.
+// Windows answers `uname` with "'uname' is not recognized…" (cmd) or "The term 'uname' is not recognized…"
+// (PowerShell) on stderr: that error is itself the Windows signal, so no second command is needed.
+const WIN_NOT_FOUND = /is not recognized as (an internal or external command|the name of a cmdlet)|CommandNotFoundException/i;
 async function detectOs(conn) {
-  const u = (await exec(conn, 'uname -s').catch(() => '')).trim();
+  let u = '';
+  try { u = (await exec(conn, 'uname -s', true)).trim(); }
+  catch (err) { if (WIN_NOT_FOUND.test(err.message)) return 'windows'; }
   if (/mingw|cygwin|msys|windows/i.test(u)) return 'windows';
   if (/darwin/i.test(u)) return 'macos';
   if (u) return /linux/i.test(u) ? 'linux' : 'unix';
@@ -182,19 +187,20 @@ const openConn = serverId => new Promise((resolve, reject) => {
   if (!s) return reject(new Error('Server not found'));
   const connId = crypto.randomUUID();
   const conn = new Client();
-  let hostKeyError = null;
+  let keyReplaced = null;
 
   const cfg = {
     host: s.host, ...sshTarget(s), readyTimeout: 15000, keepaliveInterval: 15000,
     hostHash: 'sha256',
-    // Trust on first use; refuse if the key changes later.
+    // Trust on first use. A changed key is replaced automatically (user's choice) and reported to the
+    // window: as info when the entry now points at another address, as a warning when the same address
+    // presents a new key (normal after a reinstall — but also what interception would look like).
     hostVerifier: fp => {
       const kh = readJson('known_hosts.json', {});
-      if (!kh[serverId]) { kh[serverId] = fp; writeJson('known_hosts.json', kh); return true; }
-      if (kh[serverId] === fp) return true;
-      hostKeyError = `HOST KEY CHANGED for ${s.host}. Expected ${kh[serverId]}, got ${fp}. ` +
-        'Connection refused. If the change is legitimate, delete and re-add the server.';
-      return false;
+      const d = hostKeyDecision(kh[serverId], `${s.host}:${sshTarget(s).port}`, fp);
+      if (d.first || d.replaced || kh[serverId]?.addr !== d.store.addr) { kh[serverId] = d.store; writeJson('known_hosts.json', kh); }
+      if (d.replaced) keyReplaced = d;
+      return true;
     },
   };
   try {
@@ -207,6 +213,10 @@ const openConn = serverId => new Promise((resolve, reject) => {
     const c = { conn, serverId, uname: '', sftp: null, err: null };
     conns.set(connId, c);
     patchServer(serverId, { lastSeen: Date.now() });
+    if (keyReplaced) {
+      console.warn(`Host key for ${s.name} (${keyReplaced.store.addr}) replaced: ${keyReplaced.oldFp} -> ${keyReplaced.store.fp}`);
+      send('ssh:hostKeyReplaced', serverId, { name: s.name, ...keyReplaced });
+    }
     // OS per connection (logs pick PowerShell on Windows); also remembered on the server for the Desktop button.
     c.osP = detectOs(conn).catch(() => '');
     c.osP.then(os => {
@@ -218,7 +228,7 @@ const openConn = serverId => new Promise((resolve, reject) => {
   });
   conn.on('error', err => {
     if (conns.has(connId)) conns.get(connId).err = err.message;
-    else reject(new Error(hostKeyError || err.message));
+    else reject(err);
   });
   conn.on('close', () => {
     const c = conns.get(connId);
@@ -227,7 +237,7 @@ const openConn = serverId => new Promise((resolve, reject) => {
   conn.connect(cfg);
 });
 ipcMain.handle('ssh:connect', (_e, serverId) => openConn(serverId));
-ipcMain.handle('ssh:os', (_e, connId) => getConn(connId).osP); // 'windows' | 'macos' | 'linux' | 'unix' | ''
+ipcMain.handle('ssh:os', (_e, connId) => connOs(connId)); // 'windows' | 'macos' | 'linux' | 'unix' | ''
 
 ipcMain.on('ssh:disconnect', (_e, connId) => conns.get(connId)?.conn.end());
 
@@ -481,9 +491,11 @@ ipcMain.handle('sftp:mkdir', async (_e, connId, dir) => {
   await p(cb => sftp.mkdir(dir, cb));
 });
 
-ipcMain.handle('sftp:delete', (_e, connId, target) => {
+ipcMain.handle('sftp:delete', async (_e, connId, target) => {
   if (!target || target === '/') throw new Error('Refusing to delete /');
-  return exec(getConn(connId).conn, `rm -rf -- ${shq(target)}`, true);
+  const { conn } = getConn(connId);
+  if (await isWin(connId)) return exec(conn, winlogs.removeCmd(target), true); // refuses drive roots
+  return exec(conn, `rm -rf -- ${shq(target)}`, true);
 });
 
 // Folders travel as tar.gz streams; files via SFTP.
@@ -497,10 +509,14 @@ ipcMain.handle('sftp:download', async (_e, connId, remote, isDir) => {
     const sftp = await sftpOf(connId);
     await p(cb => sftp.fastGet(remote, filePath, cb));
   } else {
-    const cmd = `tar czf - -C ${shq(rpath.dirname(remote))} ${shq(name)}`;
+    // Windows 10+/Server 2019+ ship tar.exe, so the same tar.gz stream works there.
+    const cmd = (await isWin(connId)) ? winlogs.tarDirCmd(remote) : `tar czf - -C ${shq(rpath.dirname(remote))} ${shq(name)}`;
     await new Promise((resolve, reject) => getConn(connId).conn.exec(cmd, (err, stream) => {
       if (err) return reject(err);
+      let errOut = '';
+      stream.stderr.on('data', d => (errOut += d));
       const out = fs.createWriteStream(filePath);
+      stream.on('exit', code => { if (code) reject(new Error(errOut.trim() || `remote tar exit ${code}`)); });
       stream.pipe(out).on('finish', resolve).on('error', reject);
     }));
   }
@@ -528,12 +544,26 @@ ipcMain.handle('sftp:upload', async (_e, connId, remoteDir, locals) => {
     locals = r.filePaths;
   }
   const sftp = await sftpOf(connId);
+  const win = await isWin(connId);
   for (const lp of locals) {
-    if (fs.statSync(lp).isDirectory()) await tarUpload(getConn(connId).conn, lp, remoteDir);
-    else await p(cb => sftp.fastPut(lp, rpath.join(remoteDir, path.basename(lp)), cb));
+    if (!fs.statSync(lp).isDirectory()) await p(cb => sftp.fastPut(lp, rpath.join(remoteDir, path.basename(lp)), cb));
+    else if (win) await sftpPutDir(sftp, lp, remoteDir); // no remote shell tricks on Windows: plain SFTP
+    else await tarUpload(getConn(connId).conn, lp, remoteDir);
   }
   return locals.length;
 });
+
+// Folder upload file by file over SFTP (used for Windows, where `mkdir -p && tar xzf` isn't available).
+async function sftpPutDir(sftp, local, remoteParent) {
+  const dest = rpath.join(remoteParent, path.basename(local));
+  await p(cb => sftp.mkdir(dest, cb)).catch(() => {}); // already exists is fine
+  for (const ent of fs.readdirSync(local, { withFileTypes: true })) {
+    if (ent.name === '.DS_Store' || ent.name.startsWith('._')) continue; // macOS clutter
+    const lp = path.join(local, ent.name);
+    if (ent.isDirectory()) await sftpPutDir(sftp, lp, dest);
+    else if (ent.isFile()) await p(cb => sftp.fastPut(lp, rpath.join(dest, ent.name), cb));
+  }
+}
 
 // ---------- deployments ----------
 const deployments = () => readJson('deployments.json', []);
@@ -611,7 +641,16 @@ ipcMain.on('deploy:cancel', (_e, runId) => deployRuns.get(runId)?.abort());
 const lineCount = n => Math.min(Math.max(parseInt(n, 10) || 500, 1), 100000);
 
 // Windows servers (detected per connection) read logs with PowerShell; see winlogs.js.
-const isWin = async connId => (await getConn(connId).osP) === 'windows';
+// The first detection runs while the connection is busy opening channels and can come back empty:
+// try once more, and treat RDP entries as Windows if it still can't tell.
+async function connOs(connId) {
+  const c = getConn(connId);
+  let os = await c.osP;
+  if (!os) { c.osP = detectOs(c.conn).catch(() => ''); os = await c.osP; }
+  if (!os && servers().find(x => x.id === c.serverId)?.type === 'rdp') os = 'windows';
+  return os;
+}
+const isWin = async connId => (await connOs(connId)) === 'windows';
 const notWinEventLog = src => {
   if (winlogs.isEventLog(src)) throw new Error('Event logs ("eventlog:…") exist only on Windows servers.');
 };

@@ -698,6 +698,15 @@ const tailHandlers = new Map(); // tailId -> { data(chunk), end() }
 api.logs.onData((id, d) => tailHandlers.get(id)?.data(d));
 api.logs.onEnd(id => { tailHandlers.get(id)?.end(); tailHandlers.delete(id); });
 
+// A changed host key was accepted automatically: say so (and how to tell it apart from a problem).
+api.ssh.onHostKeyReplaced((serverId, k) => {
+  const short = f => (f ? f.slice(0, 16) + '…' : '?');
+  toast(k.moved
+    ? `${k.name}: saved host key updated for the new address ${k.store.addr}.`
+    : `⚠ ${k.name}: the server's host key changed (${short(k.oldFp)} → ${short(k.store.fp)}) and was accepted. ` +
+      'Expected after reinstalling the server or its SSH service; if not, check the server.', !k.moved);
+});
+
 api.ssh.onConnClosed((connId, msg) => {
   for (const v of views.values()) if (v.connId === connId) v.disconnected(msg);
 });

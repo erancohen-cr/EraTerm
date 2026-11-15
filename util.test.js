@@ -2,7 +2,20 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
 const { shq, logLevel, parseLogTime, logRowVisible, fileKind, buildRdp, remoteDir, buildAiRequest, parseAiResponse,
-  normModel, validModel, buildModelsRequest, parseModels } = require('./util');
+  normModel, validModel, buildModelsRequest, parseModels, hostKeyDecision } = require('./util');
+
+test('host keys: first use, same key, moved entry, changed key, legacy record', () => {
+  assert.deepStrictEqual(hostKeyDecision(undefined, 'h:22', 'A'), { store: { addr: 'h:22', fp: 'A' }, replaced: false, moved: false, first: true });
+  assert.strictEqual(hostKeyDecision({ addr: 'h:22', fp: 'A' }, 'h:22', 'A').replaced, false);
+  const moved = hostKeyDecision({ addr: 'old:22', fp: 'A' }, 'new:22', 'B');
+  assert.ok(moved.replaced && moved.moved && moved.oldFp === 'A');
+  const changed = hostKeyDecision({ addr: 'h:22', fp: 'A' }, 'h:22', 'B');
+  assert.ok(changed.replaced && !changed.moved);
+  assert.deepStrictEqual(changed.store, { addr: 'h:22', fp: 'B' });
+  const legacy = hostKeyDecision('A', 'h:22', 'B'); // old builds stored only the fingerprint
+  assert.ok(legacy.replaced && !legacy.moved);
+  assert.strictEqual(hostKeyDecision('A', 'h:22', 'A').replaced, false);
+});
 
 test('model names: pasted forms are normalized, unsafe ones rejected', () => {
   assert.strictEqual(normModel(' models/gemini-3.1-pro-preview '), 'gemini-3.1-pro-preview'); // as in Gemini's error text

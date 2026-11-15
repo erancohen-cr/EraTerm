@@ -1,6 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { readCmd, tailCmd, stripHeartbeat, isEventLog, winPath, psQuote, HEARTBEAT } = require('./winlogs');
+const { readCmd, tailCmd, stripHeartbeat, isEventLog, winPath, psQuote, removeCmd, tarDirCmd, HEARTBEAT } = require('./winlogs');
+
+test('Windows delete: literal path, never a drive root', () => {
+  const s = Buffer.from(removeCmd('/C:/Users/me/old dir').split(' ').pop(), 'base64').toString('utf16le');
+  assert.match(s, /Remove-Item -LiteralPath 'C:\/Users\/me\/old dir' -Recurse -Force/);
+  for (const bad of ['/C:/', 'C:\\', 'C:', '/', '', null]) assert.throws(() => removeCmd(bad), /Refusing/);
+});
+
+test('Windows folder download uses built-in tar via cmd', () => {
+  assert.strictEqual(tarDirCmd('/C:/inetpub/logs'), 'cmd /c tar -czf - -C "C:/inetpub" "logs"');
+  assert.strictEqual(tarDirCmd('/C:/data'), 'cmd /c tar -czf - -C "C:/" "data"');
+  assert.throws(() => tarDirCmd('/C:/a&calc'), /Cannot archive/);
+});
 
 // Decode the -EncodedCommand payload back to the PowerShell script it carries.
 const script = cmd => {
