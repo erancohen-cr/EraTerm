@@ -16,7 +16,10 @@ const { runDeployment } = require('./deploy');
 
 const rpath = path.posix;
 
-// The app was first named "EraTerm": keep using that data folder so saved servers/users survive the rename.
+// The app was first named "EraTerm". Keep that internal name: on macOS safeStorage's Keychain entry is
+// "<app name> Safe Storage", so a new name = a new key = every saved password/API key fails to decrypt.
+// Also keeps the same data folder. The visible name (window, menu, installer) is still EranTerm.
+app.setName('EraTerm');
 app.setPath('userData', path.join(app.getPath('appData'), 'EraTerm'));
 
 // ponytail: JSON files in userData; move to SQLite if the server list gets large.
@@ -60,7 +63,7 @@ function showVersion() {
 }
 function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu', label: 'EranTerm' }] : []),
     { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
     { role: 'help', submenu: [
       { label: `Version ${app.getVersion()}`, click: showVersion },
