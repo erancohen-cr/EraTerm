@@ -49,7 +49,6 @@ h6 { margin: 18px 10px 6px; font-size: 10px; letter-spacing: .12em; text-transfo
 /* ---------- sidebars ---------- */
 .side { width: 220px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 8px; gap: 2px; }
 .brand { font-size: 24px; font-weight: 700; text-align: center; margin: 6px 0 16px; letter-spacing: -.02em; }
-.brand span { color: var(--accent); }
 .wide { width: 100%; padding: 9px; }
 .navitem { background: transparent; border: 0; text-align: left; padding: 9px 10px; color: var(--muted); display: flex; align-items: center; gap: 8px; border-radius: 6px; }
 .navitem:hover { background: var(--panel2); color: var(--fg); }

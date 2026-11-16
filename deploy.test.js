@@ -27,7 +27,8 @@ async function run(dep, targets) {
   return { events, status, logs: events.filter(e => e.kind === 'log').map(e => e.text).join('') };
 }
 
-test('full deployment: pre, files, deploy checks, post alert', async () => {
+// Windows temp paths (C:\...) don't survive the Unix-shell log check; deploy targets Unix servers.
+test('full deployment: pre, files, deploy checks, post alert', { skip: process.platform === 'win32' && 'needs a Unix shell' }, async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'eraterm-'));
   const src = path.join(tmp, 'app.conf');
   fs.writeFileSync(src, 'x=1');

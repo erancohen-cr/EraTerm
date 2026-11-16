@@ -482,6 +482,8 @@ async function openSettings(focusKey = false) {
   const f = $('#settingsForm');
   f.reset();
   f.elements.theme.value = getThemePref();
+  f.elements.autoUpdate.checked = aiSettings.autoUpdate;
+  $('#updHint').textContent = `You have version ${aiSettings.version}. Checks at startup and every 6 hours. Help → Check for Updates… checks now.`;
   f.elements.aiProvider.replaceChildren(...Object.entries(aiSettings.providers)
     .map(([value, d]) => el('option', { value, textContent: d.label + (d.hasKey ? '  ✓' : '') })));
   f.elements.aiProvider.value = aiSettings.aiProvider;
@@ -550,6 +552,7 @@ $('#settingsForm').addEventListener('submit', async e => {
       provider: f.aiProvider.value, model: f.aiModel.value,
       key: f.clearKey.checked ? null : f.apiKey.value.trim(),
     });
+    if (f.autoUpdate.checked !== aiSettings.autoUpdate) await api.settings.setAutoUpdate(f.autoUpdate.checked);
     try { localStorage.setItem('theme', f.theme.value); } catch { /* ignore */ }
     $('#settingsDlg').close('save');
     toast(`Settings saved. AI: ${aiSettings.providers[f.aiProvider.value].label}`);

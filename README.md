@@ -1,4 +1,4 @@
-# EraTerm
+# EranTerm
 
 Local-first desktop SSH manager for your servers: terminals, an SFTP file manager with drag & drop, live log tailing with level colours and search, and an AI assistant that only runs commands you approve.
 

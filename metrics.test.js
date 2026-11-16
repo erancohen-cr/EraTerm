@@ -24,7 +24,8 @@ test('parseTop: Linux and macOS uptime formats', () => {
   assert.deepStrictEqual([sw.swapTotal, sw.swapUsed, sw.memAvail], [2147483648, 1073741824, 2630000000]);
 });
 
-test('TOP_CMD runs on this machine', () => {
+// TOP_CMD targets Linux/macOS servers; Git Bash on Windows has no `uptime` or `ps -o`.
+test('TOP_CMD runs on this machine', { skip: process.platform === 'win32' && 'needs a Unix shell' }, () => {
   const r = parseTop(execFileSync('sh', ['-c', TOP_CMD('cpu')]).toString());
   assert.ok(r.procs.length > 0 && r.procs.length <= 15);
   assert.ok(r.cores > 0);

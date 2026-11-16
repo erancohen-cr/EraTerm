@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, safeStorage, dialog, shell, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, dialog, shell, clipboard, Menu } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { Client } = require('ssh2');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -14,6 +15,9 @@ const { shq, buildRdp, remoteDir, AI_PROVIDERS, validModel, normModel, buildAiRe
 const { runDeployment } = require('./deploy');
 
 const rpath = path.posix;
+
+// The app was first named "EraTerm": keep using that data folder so saved servers/users survive the rename.
+app.setPath('userData', path.join(app.getPath('appData'), 'EraTerm'));
 
 // ponytail: JSON files in userData; move to SQLite if the server list gets large.
 const dataFile = name => path.join(app.getPath('userData'), name);
@@ -38,6 +42,73 @@ function createWindow() {
   });
   win.loadFile('index.html');
 }
+
+// ---------- menu / help ----------
+let manualWin;
+function openManual() {
+  if (manualWin && !manualWin.isDestroyed()) return manualWin.focus();
+  manualWin = new BrowserWindow({ width: 900, height: 800, title: 'EranTerm User Manual', backgroundColor: '#0b0d10' });
+  manualWin.setMenuBarVisibility(false);
+  manualWin.loadFile('manual.html');
+}
+function showVersion() {
+  dialog.showMessageBox(win, {
+    message: `EranTerm ${app.getVersion()}`,
+    detail: `Electron ${process.versions.electron} · Chromium ${process.versions.chrome} · Node ${process.versions.node}`,
+    buttons: ['OK', 'Check for Updates…'],
+  }).then(r => { if (r.response === 1) checkUpdates(true); });
+}
+function buildMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+    { role: 'help', submenu: [
+      { label: `Version ${app.getVersion()}`, click: showVersion },
+      { label: 'User Manual', accelerator: 'F1', click: openManual },
+      { type: 'separator' },
+      { label: 'Check for Updates…', click: () => checkUpdates(true) },
+    ] },
+  ]));
+}
+
+// ---------- updates ----------
+// Feed = GitHub Releases (latest*.yml published by CI). Windows downloads in the background and installs on
+// quit / restart. ponytail: macOS can only self-install signed apps, so unsigned Mac builds just offer the
+// download page; set autoDownload = true on Mac once builds are signed + notarized.
+const RELEASES_URL = 'https://github.com/erancohen-cr/EranTerm/releases/latest';
+const isMac = process.platform === 'darwin';
+autoUpdater.autoDownload = !isMac;
+autoUpdater.on('error', e => console.error('update:', e?.message || e)); // no listener = crash on 'error'
+let offered = ''; // version already offered, so the 6-hourly check doesn't nag
+autoUpdater.on('update-available', async i => {
+  if (!isMac || offered === i.version) return;
+  offered = i.version;
+  const r = await dialog.showMessageBox(win, { message: `EranTerm ${i.version} is available`,
+    detail: `You have ${app.getVersion()}. Download the new .dmg and drag it into Applications.`, buttons: ['Download', 'Later'] });
+  if (r.response === 0) shell.openExternal(RELEASES_URL);
+});
+autoUpdater.on('update-downloaded', async i => {
+  if (offered === i.version) return;
+  offered = i.version;
+  const r = await dialog.showMessageBox(win, { message: `EranTerm ${i.version} is ready to install`,
+    detail: 'Restart now to update, or it installs the next time you quit.', buttons: ['Restart now', 'Later'] });
+  if (r.response === 0) autoUpdater.quitAndInstall();
+});
+async function checkUpdates(manual = false) {
+  if (!app.isPackaged) {
+    if (manual) dialog.showMessageBox(win, { message: 'Updates work only in the installed app.', detail: `This is a development build (${app.getVersion()}).` });
+    return;
+  }
+  if (manual) offered = ''; // asked explicitly: show the prompt again even if dismissed before
+  try {
+    const r = await autoUpdater.checkForUpdates();
+    if (manual && !r?.isUpdateAvailable) dialog.showMessageBox(win, { message: `You're up to date (${app.getVersion()}).` });
+  } catch (e) {
+    if (manual) dialog.showMessageBox(win, { type: 'error', message: 'Could not check for updates.', detail: String(e?.message || e) });
+  }
+}
+const autoUpdateOn = () => readJson('settings.json', {}).autoUpdate !== false; // default on
+setInterval(() => autoUpdateOn() && checkUpdates(), 6 * 3600e3);
 
 // callback -> promise
 const p = fn => new Promise((resolve, reject) => fn((err, v) => (err ? reject(err) : resolve(v))));
@@ -160,7 +231,13 @@ function aiConf(p) {
 const aiProvider = () => (AI_PROVIDERS[readJson('settings.json', {}).aiProvider] ? readJson('settings.json', {}).aiProvider : 'anthropic');
 const aiKey = p => process.env[AI_PROVIDERS[p].env] || (aiConf(p).keyEnc ? dec(aiConf(p).keyEnc) : '');
 
+ipcMain.handle('settings:setAutoUpdate', (_e, on) => {
+  writeJson('settings.json', { ...readJson('settings.json', {}), autoUpdate: !!on });
+  if (on) checkUpdates();
+});
 ipcMain.handle('settings:get', () => ({
+  version: app.getVersion(),
+  autoUpdate: autoUpdateOn(),
   aiProvider: aiProvider(),
   providers: Object.fromEntries(Object.entries(AI_PROVIDERS).map(([id, d]) => [id, {
     label: d.label, models: d.models, env: d.env, model: aiConf(id).model,
@@ -821,5 +898,9 @@ ipcMain.handle('ai:suggest', async (_e, connId, request) => {
   return { command: json.command, explanation: String(json.explanation || ''), risk: String(json.risk || 'unknown') };
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  buildMenu();
+  createWindow();
+  if (autoUpdateOn()) setTimeout(checkUpdates, 10e3); // after startup settles
+});
 app.on('window-all-closed', () => { for (const c of conns.values()) c.conn.end(); app.quit(); });

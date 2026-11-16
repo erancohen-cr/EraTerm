@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     setAi: a => ipcRenderer.invoke('settings:setAi', a), // { provider, key?, model }
+    setAutoUpdate: on => ipcRenderer.invoke('settings:setAutoUpdate', on),
   },
   ssh: {
     connect: serverId => ipcRenderer.invoke('ssh:connect', serverId),
