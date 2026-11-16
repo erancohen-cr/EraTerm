@@ -1,0 +1,53 @@
+name: Build installers
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      # ponytail: build number = run number, never committed back (no bot pushes / loops).
+      # Bump major.minor in package.json by hand; the patch comes from CI.
+      - name: Set version
+        shell: bash
+        run: npm version "$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')").${{ github.run_number }}" --no-git-tag-version
+      - run: npx electron-builder ${{ matrix.os == 'macos-latest' && '--mac' || '--win' }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false # unsigned; drop this once you add signing certs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')").${{ github.run_number }}"
+          gh release create "v$V" out/* --title "EraTerm $V" --generate-notes --target "${{ github.sha }}"
