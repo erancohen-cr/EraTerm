@@ -1752,6 +1752,24 @@ const setFolded = on => {
   try { localStorage.setItem('sideFolded', on ? '1' : ''); } catch { /* storage unavailable: just don't remember */ }
 };
 try { setFolded(localStorage.getItem('sideFolded') === '1'); } catch { /* default: expanded */ }
+// Resizable side menus: drag the right edge (the .side::after strip); one width for all menus.
+const setSideW = w => document.body.style.setProperty('--side-w', Math.min(480, Math.max(160, w)) + 'px');
+try { const w = +localStorage.getItem('sideW'); if (w) setSideW(w); } catch { /* default width */ }
+document.addEventListener('pointerdown', e => {
+  const side = e.target;
+  if (!side.classList?.contains('side') || document.body.classList.contains('folded')) return;
+  const { left, right } = side.getBoundingClientRect();
+  if (e.clientX < right - 4) return; // a click inside the menu, not on the edge strip
+  e.preventDefault();
+  document.body.classList.add('resizing');
+  const move = ev => setSideW(ev.clientX - left);
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', () => {
+    removeEventListener('pointermove', move);
+    document.body.classList.remove('resizing');
+    try { localStorage.setItem('sideW', parseInt(document.body.style.getPropertyValue('--side-w'))); } catch { /* not remembered */ }
+  }, { once: true });
+});
 document.addEventListener('click', e => {
   if (e.target.closest('.fold')) setFolded(!document.body.classList.contains('folded'));
 });

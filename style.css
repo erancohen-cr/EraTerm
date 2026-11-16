@@ -47,7 +47,7 @@ h6 { margin: 18px 10px 6px; font-size: 10px; letter-spacing: .12em; text-transfo
 .view { flex: 1; display: flex; min-width: 0; min-height: 0; }
 
 /* ---------- sidebars ---------- */
-.side { width: 220px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 8px; gap: 2px; }
+.side { flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 8px; gap: 2px; }
 .brand { font-size: 24px; font-weight: 700; text-align: center; margin: 6px 0 16px; letter-spacing: -.02em; }
 .wide { width: 100%; padding: 9px; }
 .navitem { background: transparent; border: 0; text-align: left; padding: 9px 10px; color: var(--muted); display: flex; align-items: center; gap: 8px; border-radius: 6px; }
@@ -218,7 +218,13 @@ dialog label.row input { width: auto; }
 dialog menu { display: flex; justify-content: flex-end; gap: 6px; padding: 0; margin: 12px 0 0; }
 
 /* ---------- foldable side menus ---------- */
-.side { position: relative; z-index: 2; transition: width .15s ease; }
+.side { position: relative; z-index: 2; transition: width .15s ease; width: var(--side-w, 220px); }
+/* Drag handle on the right edge (renderer: resizable side menus). */
+.side::after { content: ''; position: absolute; top: 0; bottom: 0; right: -3px; width: 6px; cursor: col-resize; }
+body.resizing .side::after { background: var(--accent-dim); }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing .side { transition: none; }
+body.folded .side::after { display: none; }
 .brand .g { color: var(--accent); }
 .navitem i { font-style: normal; width: 20px; text-align: center; flex: none; }
 .navitem .lbl { white-space: nowrap; overflow: hidden; }
@@ -334,7 +340,7 @@ dialog select { width: 100%; }
 
 /* ---------- groups + users ---------- */
 .navgroups { display: flex; flex-direction: column; gap: 2px; overflow: auto; min-height: 72px; }
-.navitem .lbl:not(.count) { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.navitem .lbl:not(.count):not(.gedit) { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .grprow td { background: var(--panel); padding: 7px 12px; cursor: pointer; user-select: none; position: relative; }
 .grprow:hover td { background: var(--panel2); }
 .grprow .caret { display: inline-block; width: 16px; color: var(--accent); }
@@ -344,8 +350,9 @@ dialog select { width: 100%; }
 .grprow:hover .gacts { opacity: 1; }
 h6.navhead { display: flex; align-items: center; justify-content: space-between; }
 h6.navhead button { padding: 0 6px; font-size: 13px; line-height: 18px; }
-.navitem .gedit { padding: 0 5px; line-height: 18px; opacity: 0; }
-.navitem:hover .gedit { opacity: 1; }
+/* Edit pencil: tight button, takes no room until the row is hovered, so group names get the space. */
+.navitem .gedit { flex: none; padding: 0 2px; margin: -2px -4px -2px 0; line-height: 16px; border-radius: 4px; }
+.navitem:not(:hover) .gedit { display: none; }
 body.folded .navitem .gedit { display: none; }
 .grprow.shut td { color: var(--muted); }
 .srow td:first-child { padding-left: 28px; }
