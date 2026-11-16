@@ -1,20 +1,27 @@
 name: Build installers
 
+# PR into main (opened / new commits): test + build installers (downloadable from the run, no release).
+# PR merged into main: build again from the merge commit and publish a GitHub Release.
+# Direct pushes (to dev or main) do nothing.
 on:
-  push:
+  pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, closed]
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: github.event.action != 'closed' || github.event.pull_request.merged
     strategy:
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merged && github.event.pull_request.merge_commit_sha || '' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -42,9 +49,12 @@ jobs:
 
   release:
     needs: build
+    if: github.event.pull_request.merged
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
       - uses: actions/download-artifact@v4
         with:
           path: out
@@ -54,4 +64,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           V="$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')").${{ github.run_number }}"
-          gh release create "v$V" out/* --title "EranTerm $V" --generate-notes --target "${{ github.sha }}"
+          gh release create "v$V" out/* --title "EranTerm $V" --generate-notes --target "${{ github.event.pull_request.merge_commit_sha }}"
