@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const zlib = require('node:zlib');
 const { StringDecoder } = require('node:string_decoder');
 const { METRICS_CMD, parseMetrics, TOP_CMD, parseTop } = require('./metrics');
 const { killCmd, DROP_CACHES_CMD, SCAN_CMD, parseScan, cleanCmd } = require('./maint');
@@ -498,8 +499,30 @@ ipcMain.handle('sftp:delete', async (_e, connId, target) => {
   return exec(conn, `rm -rf -- ${shq(target)}`, true);
 });
 
+// Transfer progress for the File Manager: `sftp:progress` events (throttled) with bytes done / total.
+// total 0 = unknown size (the UI shows bytes and speed without a percentage).
+function progress(xferId, name, total) {
+  let done = 0, last = 0;
+  const emit = force => {
+    const now = Date.now();
+    if (!xferId || (!force && now - last < 150)) return;
+    last = now;
+    send('sftp:progress', xferId, { name, done, total });
+  };
+  emit(true);
+  return { add(n) { done += n; emit(); }, end() { done = Math.max(done, total); emit(true); } };
+}
+// Bytes of a local file or folder (what tar/SFTP will send, give or take tar headers).
+function localSize(p) {
+  const st = fs.statSync(p);
+  if (!st.isDirectory()) return st.size;
+  return fs.readdirSync(p).reduce((n, f) => { try { return n + localSize(path.join(p, f)); } catch { return n; } }, 0);
+}
+// fastGet/fastPut report a running total per file; turn that into increments.
+const stepper = prog => { let prev = 0; return { step: t => { prog.add(t - prev); prev = t; } }; };
+
 // Folders travel as tar.gz streams; files via SFTP.
-ipcMain.handle('sftp:download', async (_e, connId, remote, isDir) => {
+ipcMain.handle('sftp:download', async (_e, connId, remote, isDir, xferId) => {
   const name = rpath.basename(remote) || 'root';
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
     defaultPath: path.join(app.getPath('downloads'), isDir ? `${name}.tar.gz` : name),
@@ -507,61 +530,77 @@ ipcMain.handle('sftp:download', async (_e, connId, remote, isDir) => {
   if (canceled) return null;
   if (!isDir) {
     const sftp = await sftpOf(connId);
-    await p(cb => sftp.fastGet(remote, filePath, cb));
+    const size = (await p(cb => sftp.stat(remote, cb)).catch(() => null))?.size || 0;
+    const prog = progress(xferId, name, size);
+    await p(cb => sftp.fastGet(remote, filePath, stepper(prog), cb));
+    prog.end();
   } else {
+    const winHost = await isWin(connId);
+    const { conn } = getConn(connId);
+    // Size estimate for the percentage (Unix only); progress counts the uncompressed bytes we receive.
+    const kb = winHost ? 0 : parseInt(await exec(conn, `du -sk ${shq(remote)} 2>/dev/null | cut -f1`).catch(() => ''), 10) || 0;
+    const prog = progress(xferId, `${name}.tar.gz`, kb * 1024);
     // Windows 10+/Server 2019+ ship tar.exe, so the same tar.gz stream works there.
-    const cmd = (await isWin(connId)) ? winlogs.tarDirCmd(remote) : `tar czf - -C ${shq(rpath.dirname(remote))} ${shq(name)}`;
-    await new Promise((resolve, reject) => getConn(connId).conn.exec(cmd, (err, stream) => {
+    const cmd = winHost ? winlogs.tarDirCmd(remote) : `tar czf - -C ${shq(rpath.dirname(remote))} ${shq(name)}`;
+    await new Promise((resolve, reject) => conn.exec(cmd, (err, stream) => {
       if (err) return reject(err);
       let errOut = '';
       stream.stderr.on('data', d => (errOut += d));
       const out = fs.createWriteStream(filePath);
+      const count = zlib.createGunzip().on('data', c => prog.add(c.length)).on('error', () => {}); // counting only
+      stream.on('data', d => count.write(d));
       stream.on('exit', code => { if (code) reject(new Error(errOut.trim() || `remote tar exit ${code}`)); });
       stream.pipe(out).on('finish', resolve).on('error', reject);
     }));
+    prog.end();
   }
   return filePath;
 });
 
 // Streams a local file or folder as tar.gz into remote `dir` (created if missing; "~/x" allowed).
-const tarUpload = (conn, local, dir) => new Promise((resolve, reject) => {
+// Compressed here (not by tar) so `onBytes` can count the uncompressed bytes for progress.
+const tarUpload = (conn, local, dir, onBytes) => new Promise((resolve, reject) => {
   if (!fs.existsSync(local)) return reject(new Error(`Local path not found: ${local}`));
   const d = remoteDir(dir);
   conn.exec(`mkdir -p ${d} && tar xzf - -C ${d}`, (err, stream) => {
     if (err) return reject(err);
-    const t = spawn('tar', ['czf', '-', '-C', path.dirname(local), path.basename(local)],
+    const t = spawn('tar', ['cf', '-', '-C', path.dirname(local), path.basename(local)],
       { env: { ...process.env, COPYFILE_DISABLE: '1' } }); // no macOS ._ files
     t.on('error', reject);
-    t.stdout.pipe(stream);
+    if (onBytes) t.stdout.on('data', c => onBytes(c.length));
+    t.stdout.pipe(zlib.createGzip()).pipe(stream);
     stream.on('close', code => (code ? reject(new Error(`remote tar exit ${code}`)) : resolve()));
   });
 });
 
-ipcMain.handle('sftp:upload', async (_e, connId, remoteDir, locals) => {
+ipcMain.handle('sftp:upload', async (_e, connId, remoteDir, locals, xferId) => {
   if (!locals?.length) {
     const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'openDirectory', 'multiSelections'] });
     if (r.canceled) return 0;
     locals = r.filePaths;
   }
   const sftp = await sftpOf(connId);
-  const win = await isWin(connId);
+  const winHost = await isWin(connId);
+  const total = locals.reduce((n, lp) => { try { return n + localSize(lp); } catch { return n; } }, 0);
+  const prog = progress(xferId, locals.length === 1 ? path.basename(locals[0]) : `${locals.length} items`, total);
   for (const lp of locals) {
-    if (!fs.statSync(lp).isDirectory()) await p(cb => sftp.fastPut(lp, rpath.join(remoteDir, path.basename(lp)), cb));
-    else if (win) await sftpPutDir(sftp, lp, remoteDir); // no remote shell tricks on Windows: plain SFTP
-    else await tarUpload(getConn(connId).conn, lp, remoteDir);
+    if (!fs.statSync(lp).isDirectory()) await p(cb => sftp.fastPut(lp, rpath.join(remoteDir, path.basename(lp)), stepper(prog), cb));
+    else if (winHost) await sftpPutDir(sftp, lp, remoteDir, prog); // no remote shell tricks on Windows: plain SFTP
+    else await tarUpload(getConn(connId).conn, lp, remoteDir, n => prog.add(n));
   }
+  prog.end();
   return locals.length;
 });
 
 // Folder upload file by file over SFTP (used for Windows, where `mkdir -p && tar xzf` isn't available).
-async function sftpPutDir(sftp, local, remoteParent) {
+async function sftpPutDir(sftp, local, remoteParent, prog) {
   const dest = rpath.join(remoteParent, path.basename(local));
   await p(cb => sftp.mkdir(dest, cb)).catch(() => {}); // already exists is fine
   for (const ent of fs.readdirSync(local, { withFileTypes: true })) {
     if (ent.name === '.DS_Store' || ent.name.startsWith('._')) continue; // macOS clutter
     const lp = path.join(local, ent.name);
-    if (ent.isDirectory()) await sftpPutDir(sftp, lp, dest);
-    else if (ent.isFile()) await p(cb => sftp.fastPut(lp, rpath.join(dest, ent.name), cb));
+    if (ent.isDirectory()) await sftpPutDir(sftp, lp, dest, prog);
+    else if (ent.isFile()) await p(cb => sftp.fastPut(lp, rpath.join(dest, ent.name), prog ? stepper(prog) : {}, cb));
   }
 }
 

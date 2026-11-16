@@ -45,8 +45,9 @@ contextBridge.exposeInMainWorld('api', {
     list: (connId, dir) => ipcRenderer.invoke('sftp:list', connId, dir),
     mkdir: (connId, dir) => ipcRenderer.invoke('sftp:mkdir', connId, dir),
     delete: (connId, p) => ipcRenderer.invoke('sftp:delete', connId, p),
-    download: (connId, p, isDir) => ipcRenderer.invoke('sftp:download', connId, p, isDir),
-    upload: (connId, dir, locals) => ipcRenderer.invoke('sftp:upload', connId, dir, locals),
+    download: (connId, p, isDir, xferId) => ipcRenderer.invoke('sftp:download', connId, p, isDir, xferId),
+    upload: (connId, dir, locals, xferId) => ipcRenderer.invoke('sftp:upload', connId, dir, locals, xferId),
+    onProgress: on('sftp:progress'),
   },
   logs: {
     read: (connId, file, n) => ipcRenderer.invoke('logs:read', connId, file, n),

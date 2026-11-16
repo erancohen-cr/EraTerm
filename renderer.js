@@ -695,6 +695,8 @@ function makeTerm(host, connId, cwd, serverId) {
 
 // ================= server page =================
 const tailHandlers = new Map(); // tailId -> { data(chunk), end() }
+const xferHandlers = new Map(); // xferId -> progress handler (File Manager transfers)
+api.sftp.onProgress((id, p) => xferHandlers.get(id)?.(p));
 api.logs.onData((id, d) => tailHandlers.get(id)?.data(d));
 api.logs.onEnd(id => { tailHandlers.get(id)?.end(); tailHandlers.delete(id); });
 
@@ -986,7 +988,7 @@ async function openServer(s) {
   q('.sideclose').onclick = () => { sideTerm?.dispose(); sideTerm = null; q('.sidepane').hidden = true; };
 
   // ---- file manager ----
-  const fm = { path: '', entries: [], loaded: false };
+  const fm = { path: '', entries: [], loaded: false, sort: { key: 'name', asc: true } };
   async function loadDir(dir) {
     try {
       const r = await api.sftp.list(v.connId, dir);
@@ -1004,7 +1006,12 @@ async function openServer(s) {
     const hidden = q('.showhidden').checked;
     const list = fm.entries
       .filter(e => (hidden || !e.name.startsWith('.')) && (!term || e.name.toLowerCase().includes(term)))
-      .sort((a, b) => (a.type === 'dir' ? 0 : 1) - (b.type === 'dir' ? 0 : 1) || a.name.localeCompare(b.name));
+      .sort((a, b) => (a.type === 'dir' ? 0 : 1) - (b.type === 'dir' ? 0 : 1) || fileCmp(a, b)); // folders stay on top
+    for (const th of q('.fm thead').querySelectorAll('th.sortable')) {
+      const on = th.dataset.sort === fm.sort.key;
+      th.classList.toggle('on', on);
+      th.querySelector('.sorti').textContent = on ? (fm.sort.asc ? '▲' : '▼') : '⇅';
+    }
     q('.frows').replaceChildren(...list.map(e => {
       const isDir = e.type === 'dir';
       const cwd = isDir ? e.path : fm.path;
@@ -1019,7 +1026,9 @@ async function openServer(s) {
           iconBtn('◧', 'Open in side terminal', () => openSide(cwd)),
           iconBtn('›_', 'Open in terminal', () => openInTerminal(cwd)),
           iconBtn('⧉', 'Copy path', () => navigator.clipboard.writeText(e.path).then(() => toast(`Copied ${e.path}`), err => toast(cleanErr(err), true))),
-          isDir ? el('span', { className: 'ph-btn' }) : iconBtn('≡⁺', 'Add to Logs (open it in the Logs tab)', () => v.addToLogs(e.path)),
+          isDir ? el('span', { className: 'ph-btn' }) : v.inLogs(e.path)
+            ? iconBtn('≡✓', 'In Logs — click to open it in the Logs tab', () => v.openInLogs(e.path), 'icon inlogs')
+            : iconBtn('≡⁺', 'Add to Logs', () => v.addToLogs(e.path)),
           iconBtn('⤓', isDir ? 'Download as .tar.gz' : 'Download', () => download(e)),
           iconBtn('🗑', 'Delete', () => remove(e), 'icon danger')));
       tr.ondblclick = () => (isDir ? loadDir(e.path) : download(e));
@@ -1030,12 +1039,79 @@ async function openServer(s) {
     q('.fstat').textContent = `${dirs} folders · ${list.length - dirs} files · ${fmtSize(bytes)}`;
   }
 
+  // Folders first (always), then the clicked column; click again to reverse.
+  const fileCmp = (a, b) => {
+    const k = fm.sort.key;
+    const d = k === 'size' ? (a.size || 0) - (b.size || 0) : k === 'mtime' ? a.mtime - b.mtime : 0;
+    return (fm.sort.asc ? 1 : -1) * (d || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  };
+  for (const th of q('.fm thead').querySelectorAll('th.sortable')) {
+    th.onclick = () => {
+      const k = th.dataset.sort;
+      fm.sort = { key: k, asc: fm.sort.key === k ? !fm.sort.asc : k === 'name' }; // size/date: biggest/newest first
+      renderFiles();
+    };
+  }
+
+  // ---- transfers: a card per upload/download with %, speed and time left ----
+  const fmtDur = sec => (sec < 60 ? `${Math.max(1, Math.round(sec))}s` : sec < 3600 ? `${Math.floor(sec / 60)}m ${String(Math.round(sec % 60)).padStart(2, '0')}s` : `${Math.floor(sec / 3600)}h ${Math.round((sec % 3600) / 60)}m`);
+  function transfer(kind) { // kind: 'up' | 'down'
+    const id = Math.random().toString(36).slice(2);
+    let card = null, t0 = 0, last = { t: 0, done: 0 }, speed = 0, cur = { done: 0, total: 0 };
+    const make = name => {
+      t0 = last.t = performance.now();
+      const fill = el('i'), pct = el('b', { className: 'xpct' }), meta = el('small', { className: 'xmeta mono' });
+      card = el('div', { className: `xfer ${kind} running` },
+        el('span', { className: 'xicon' }, el('span', { textContent: kind === 'up' ? '⤒' : '⤓' })),
+        el('div', { className: 'xmain' },
+          el('div', { className: 'xline' }, el('b', { className: 'xname', textContent: name, title: name }), el('span', { className: 'grow' }), pct),
+          el('div', { className: 'xbar' }, fill), meta),
+        iconBtn('×', 'Dismiss', () => card.remove(), 'icon xclose'));
+      Object.assign(card, { fill, pct, meta });
+      q('.xfers').append(card);
+    };
+    xferHandlers.set(id, p => {
+      if (!card) make(p.name);
+      const now = performance.now(), dt = (now - last.t) / 1000;
+      if (dt > 0.2) { // smoothed speed, so the estimate doesn't jump around
+        const inst = (p.done - last.done) / dt;
+        speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+        last = { t: now, done: p.done };
+      }
+      cur = p;
+      const known = p.total > 0;
+      card.classList.toggle('unknown', !known);
+      const frac = known ? Math.min(0.99, p.done / p.total) : 0; // 100% only when it really finished
+      card.fill.style.width = known ? `${frac * 100}%` : '';
+      card.pct.textContent = known ? `${Math.floor(frac * 100)}%` : '';
+      const left = known && speed > 0 ? ` · ${fmtDur((p.total - p.done) / speed)} left` : '';
+      card.meta.textContent = `${fmtSize(p.done)}${known ? ` of ${fmtSize(p.total)}` : ''}${speed > 0 ? ` · ${fmtSize(speed)}/s` : ''}${left}`;
+    });
+    return {
+      id,
+      finish(err) {
+        xferHandlers.delete(id);
+        if (!card) return; // cancelled before it started (file dialog)
+        const secs = (performance.now() - t0) / 1000;
+        card.classList.remove('running', 'unknown');
+        card.classList.add(err ? 'failed' : 'done');
+        card.querySelector('.xicon span').textContent = err ? '✕' : '✓';
+        if (err) { card.meta.textContent = cleanErr(err); return; }
+        card.fill.style.width = '100%';
+        card.pct.textContent = '100%';
+        card.meta.textContent = `Done · ${fmtSize(cur.done)} in ${fmtDur(secs)}` + (secs > 1 && cur.done ? ` · avg ${fmtSize(cur.done / secs)}/s` : '');
+        setTimeout(() => { card.classList.add('gone'); setTimeout(() => card.remove(), 400); }, 6000);
+      },
+    };
+  }
+
   async function download(e) {
+    const x = transfer('down');
     try {
-      toast(`Downloading ${e.name}…`);
-      const saved = await api.sftp.download(v.connId, e.path, e.type === 'dir');
+      const saved = await api.sftp.download(v.connId, e.path, e.type === 'dir', x.id);
+      x.finish();
       if (saved) toast(`Saved to ${saved}`);
-    } catch (err) { toast(`Download failed: ${cleanErr(err)}`, true); }
+    } catch (err) { x.finish(err); toast(`Download failed: ${cleanErr(err)}`, true); }
   }
 
   async function remove(e) {
@@ -1045,11 +1121,12 @@ async function openServer(s) {
   }
 
   async function upload(locals) {
+    const x = transfer('up');
     try {
-      toast('Uploading…');
-      const n = await api.sftp.upload(v.connId, fm.path, locals);
+      const n = await api.sftp.upload(v.connId, fm.path, locals, x.id);
+      x.finish();
       if (n) toast(`Uploaded ${n} item${n === 1 ? '' : 's'} to ${fm.path}`);
-    } catch (err) { toast(`Upload failed: ${cleanErr(err)}`, true); }
+    } catch (err) { x.finish(err); toast(`Upload failed: ${cleanErr(err)}`, true); }
     loadDir(fm.path);
   }
 
@@ -1094,6 +1171,7 @@ async function openServer(s) {
   function removeSource(p) {
     lg.paths = lg.paths.filter(x => x !== p);
     saveSources();
+    if (fm.loaded) renderFiles(); // its "Add to Logs" button turns back
     if (lg.cur === p) {
       stopTail(); lg.cur = null; lbody.replaceChildren(); updateLogStat();
       q('.lname').textContent = 'Select a log source'; q('.lpath').textContent = ''; q('.lcopy').hidden = true;
@@ -1115,13 +1193,14 @@ async function openServer(s) {
     selectLog(p);
   };
   q('.lfilter').oninput = renderSources;
-  // From the File Manager: add the file as a log source and open it.
+  // From the File Manager: add the file as a log source (stays on the File Manager; the button turns green).
+  v.inLogs = p => lg.paths.includes(p);
   v.addToLogs = p => {
     addLogSource(p);
-    pickPanel('logs');
-    selectLog(p);
+    renderFiles();
     toast(`Added to Logs: ${p}`);
   };
+  v.openInLogs = p => { pickPanel('logs'); selectLog(p); };
 
   // Suggestions for the "add source" box, by the server's OS (known after the first connection).
   const LOG_SUGGEST = {
