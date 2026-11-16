@@ -54,4 +54,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           V="$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')").${{ github.run_number }}"
-          gh release create "v$V" out/* --title "EraTerm $V" --generate-notes --target "${{ github.sha }}"
+          gh release create "v$V" out/* --title "EranTerm $V" --generate-notes --target "${{ github.sha }}"
