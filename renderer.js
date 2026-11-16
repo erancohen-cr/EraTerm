@@ -96,7 +96,7 @@ function show(id) {
 $('#homeTab').onclick = () => show('home');
 
 // ================= home: servers, groups, users =================
-let servers = [], users = [];
+let servers = [], users = [], savedGroups = [];
 let homeMode = 'all'; // 'all' | 'fav' | 'users' | 'group:<name>'
 const UNGROUPED = 'Ungrouped';
 const groupOf = s => s.group || UNGROUPED;
@@ -106,14 +106,14 @@ try { collapsed = new Set(JSON.parse(localStorage.getItem('collapsedGroups')) ||
 const saveCollapsed = () => { try { localStorage.setItem('collapsedGroups', JSON.stringify([...collapsed])); } catch { /* ignore */ } };
 
 async function refreshServers() {
-  [servers, users] = await Promise.all([api.servers.list(), api.users.list()]);
+  [servers, users, savedGroups] = await Promise.all([api.servers.list(), api.users.list(), api.groups.list()]);
   renderNav();
   renderServers();
   renderUsers();
 }
 
 function groupNames() {
-  const named = [...new Set(servers.map(s => s.group).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const named = [...new Set([...savedGroups, ...servers.map(s => s.group).filter(Boolean)])].sort((a, b) => a.localeCompare(b));
   return servers.some(s => !s.group) ? [...named, UNGROUPED] : named;
 }
 
@@ -138,7 +138,8 @@ function renderNav() {
   $('#navGroups').replaceChildren(...groupNames().map(name => el('button', {
     className: 'navitem' + (g === name ? ' active' : ''), title: name, onclick: () => setMode('group:' + name),
   }, el('i', { textContent: name === UNGROUPED ? '◌' : '▣' }), el('span', { className: 'lbl', textContent: name }),
-  el('span', { className: 'count lbl', textContent: servers.filter(s => groupOf(s) === name).length }))));
+  el('span', { className: 'count lbl', textContent: servers.filter(s => groupOf(s) === name).length }),
+  ...(name === UNGROUPED ? [] : [iconBtn('✎', `Edit group ${name}`, () => editGroup(name), 'icon gedit lbl')]))));
   $('#serversView').hidden = homeMode === 'users' || homeMode === 'deploy';
   $('#usersView').hidden = homeMode !== 'users';
   $('#deployView').hidden = homeMode !== 'deploy';
@@ -233,7 +234,7 @@ function renderServers() {
   const rows = [];
   for (const name of groupNames()) {
     const members = list.filter(s => groupOf(s) === name);
-    if (!members.length) continue;
+    if (!members.length && (q || homeMode === 'fav')) continue; // empty groups show only when not filtering
     const shut = !q && collapsed.has(name); // searching always shows matches
     rows.push(el('tr', {
       className: 'grprow' + (shut ? ' shut' : ''),
@@ -243,12 +244,46 @@ function renderServers() {
       el('b', { textContent: name }),
       el('span', { className: 'count', textContent: members.length }),
       el('span', { className: 'grow' }),
-      iconBtn('＋', `Add a server to ${name}`, () => editServer({ group: name === UNGROUPED ? '' : name })))));
+      el('span', { className: 'gacts' },
+        ...(name === UNGROUPED ? [] : [iconBtn('✎', `Edit group ${name}`, () => editGroup(name))]),
+        iconBtn('＋', `Add a server to ${name}`, () => editServer({ group: name === UNGROUPED ? '' : name }))))));
     if (!shut) rows.push(...members.map(serverRow));
   }
   $('#serverRows').replaceChildren(...rows);
   $('#emptyHome').hidden = servers.length > 0;
 }
+// ---- groups: new / rename / delete ----
+function editGroup(name = '') {
+  const dlg = $('#groupDlg'), f = $('#groupForm');
+  $('#groupTitle').textContent = name ? 'Edit group' : 'New group';
+  f.elements.name.value = name;
+  const n = servers.filter(s => s.group === name).length;
+  $('#groupInfo').textContent = name ? `${n} server${n === 1 ? '' : 's'} in this group.` : '';
+  f.querySelector('.gdel').hidden = !name;
+  dlg.returnValue = '';
+  dlg.showModal();
+  dlg.addEventListener('close', async () => {
+    try {
+      if (dlg.returnValue === 'save') {
+        const next = await api.groups.save(name, f.elements.name.value);
+        if (name && next !== name) {
+          if (collapsed.delete(name)) { collapsed.add(next); saveCollapsed(); }
+          if (modeGroup() === name) homeMode = 'group:' + next;
+        }
+        toast(name ? `Group renamed to ${next}` : `Group ${next} created`);
+      } else if (dlg.returnValue === 'delete') {
+        if (!await ask({ title: `Delete group "${name}"?`, danger: true, ok: 'Delete group',
+          body: n ? `Its ${n} server${n === 1 ? '' : 's'} will move to ${UNGROUPED}. No servers are deleted.` : 'The group is empty.' })) return;
+        await api.groups.delete(name);
+        if (modeGroup() === name) homeMode = 'all';
+        toast(`Group ${name} deleted`);
+      } else return;
+      refreshServers();
+    } catch (e) { toast(cleanErr(e), true); }
+  }, { once: true });
+}
+$('#newGroupBtn').onclick = () => editGroup();
+
 $('#collapseAll').onclick = () => { collapsed = new Set(groupNames()); saveCollapsed(); renderServers(); };
 $('#expandAll').onclick = () => { collapsed.clear(); saveCollapsed(); renderServers(); };
 

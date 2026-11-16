@@ -11,6 +11,11 @@ contextBridge.exposeInMainWorld('api', {
     setLogPaths: (id, paths) => ipcRenderer.invoke('servers:setLogPaths', id, paths),
     setAlerts: (id, alerts) => ipcRenderer.invoke('servers:setAlerts', id, alerts),
   },
+  groups: {
+    list: () => ipcRenderer.invoke('groups:list'),
+    save: (oldName, name) => ipcRenderer.invoke('groups:save', oldName, name),
+    delete: name => ipcRenderer.invoke('groups:delete', name),
+  },
   users: {
     list: () => ipcRenderer.invoke('users:list'),
     save: u => ipcRenderer.invoke('users:save', u),

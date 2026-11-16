@@ -123,6 +123,30 @@ ipcMain.handle('servers:delete', (_e, id) => {
   writeJson('known_hosts.json', kh);
 });
 
+// ---------- groups ----------
+// A server's group is its `group` field; groups.json only remembers names, so a group can exist empty.
+const GROUP_RESERVED = 'Ungrouped';
+const groupList = () => readJson('groups.json', []);
+const cleanGroup = n => String(n || '').trim().slice(0, 100);
+ipcMain.handle('groups:list', () => groupList());
+// save(old, name): old empty = create; otherwise rename (members follow). Returns the saved name.
+ipcMain.handle('groups:save', (_e, oldName, name) => {
+  const old = cleanGroup(oldName), next = cleanGroup(name);
+  if (!next) throw new Error('Group name is required');
+  if (next.toLowerCase() === GROUP_RESERVED.toLowerCase()) throw new Error(`"${GROUP_RESERVED}" is reserved`);
+  const taken = new Set([...groupList(), ...servers().map(s => s.group).filter(Boolean)]);
+  if (next !== old && taken.has(next)) throw new Error(`A group named "${next}" already exists`);
+  writeJson('groups.json', [...new Set([...groupList().filter(g => g !== old), next])]);
+  if (old) writeJson('servers.json', servers().map(s => (s.group === old ? { ...s, group: next } : s)));
+  return next;
+});
+// Deleting a group keeps its servers: they move to Ungrouped.
+ipcMain.handle('groups:delete', (_e, name) => {
+  const n = cleanGroup(name);
+  writeJson('groups.json', groupList().filter(g => g !== n));
+  writeJson('servers.json', servers().map(s => (s.group === n ? { ...s, group: '' } : s)));
+});
+
 // ---------- settings ----------
 // AI: settings.json { aiProvider, ai: { <provider>: { keyEnc, model } } }. Keys are Keychain-encrypted;
 // an env var (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) overrides the saved key.

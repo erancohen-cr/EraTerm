@@ -22,7 +22,7 @@
         <button class="navitem" id="navFav" title="Favorites"><i>☆</i><span class="lbl">Favorites</span><span class="count lbl" id="favCount"></span></button>
         <button class="navitem" id="navUsers" title="Users"><i>👤</i><span class="lbl">Users</span><span class="count lbl" id="userCount"></span></button>
         <button class="navitem" id="navDeploy" title="Deployments"><i>🚀</i><span class="lbl">Deployments</span></button>
-        <h6 class="lbl">Groups</h6>
+        <h6 class="lbl navhead">Groups <button id="newGroupBtn" class="icon" title="New group">＋</button></h6>
         <div id="navGroups" class="navgroups"></div>
         <span class="grow"></span>
         <button class="navitem" id="settingsBtn" title="Settings"><i>⚙</i><span class="lbl">Settings</span></button>
@@ -369,6 +369,15 @@
       <label class="row"><input name="clearPassword" type="checkbox"> Remove the saved password</label>
       <label>Private key path (SSH) <input name="keyPath" placeholder="~/.ssh/id_ed25519 (optional)"></label>
       <menu><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="groupDlg">
+    <form method="dialog" id="groupForm">
+      <h3 id="groupTitle"></h3>
+      <label>Name <input name="name" required maxlength="100" autocomplete="off" placeholder="e.g. Production"></label>
+      <p id="groupInfo" class="muted"></p>
+      <menu><button value="delete" class="gdel danger-btn" formnovalidate>Delete</button><span class="grow"></span><button value="cancel" formnovalidate>Cancel</button><button value="save" class="primary">Save</button></menu>
     </form>
   </dialog>
 
