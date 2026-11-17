@@ -483,6 +483,8 @@ async function openSettings(focusKey = false) {
   f.reset();
   f.elements.theme.value = getThemePref();
   f.elements.autoUpdate.checked = aiSettings.autoUpdate;
+  f.elements.logToFile.checked = aiSettings.logToFile;
+  f.elements.logDir.value = aiSettings.logDir;
   $('#updHint').textContent = `You have version ${aiSettings.version}. Checks at startup and every 6 hours. Help → Check for Updates… checks now.`;
   f.elements.aiProvider.replaceChildren(...Object.entries(aiSettings.providers)
     .map(([value, d]) => el('option', { value, textContent: d.label + (d.hasKey ? '  ✓' : '') })));
@@ -493,6 +495,12 @@ async function openSettings(focusKey = false) {
   if (focusKey) f.elements.apiKey.focus();
 }
 $('#settingsForm').elements.aiProvider.onchange = e => showProvider(e.target.value);
+$('#logPick').onclick = async () => {
+  const dir = await api.settings.pickLogDir($('#settingsForm').elements.logDir.value);
+  if (dir) $('#settingsForm').elements.logDir.value = dir;
+};
+$('#logOpen').onclick = () => api.log.openFolder();
+$('#logConsole').onclick = () => api.log.openConsole();
 $('#settingsBtn').onclick = () => openSettings();
 
 // Confirm / small form dialog. body: string or element(s). Resolves true on OK.
@@ -553,6 +561,9 @@ $('#settingsForm').addEventListener('submit', async e => {
       key: f.clearKey.checked ? null : f.apiKey.value.trim(),
     });
     if (f.autoUpdate.checked !== aiSettings.autoUpdate) await api.settings.setAutoUpdate(f.autoUpdate.checked);
+    if (f.logToFile.checked !== aiSettings.logToFile || f.logDir.value.trim() !== aiSettings.logDir) {
+      await api.settings.setLog({ logToFile: f.logToFile.checked, logDir: f.logDir.value });
+    }
     try { localStorage.setItem('theme', f.theme.value); } catch { /* ignore */ }
     $('#settingsDlg').close('save');
     toast(`Settings saved. AI: ${aiSettings.providers[f.aiProvider.value].label}`);
