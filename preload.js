@@ -25,6 +25,15 @@ contextBridge.exposeInMainWorld('api', {
     get: () => ipcRenderer.invoke('settings:get'),
     setAi: a => ipcRenderer.invoke('settings:setAi', a), // { provider, key?, model }
     setAutoUpdate: on => ipcRenderer.invoke('settings:setAutoUpdate', on),
+    setLog: a => ipcRenderer.invoke('settings:setLog', a), // { logToFile, logDir }
+    pickLogDir: cur => ipcRenderer.invoke('settings:pickLogDir', cur),
+  },
+  log: {
+    all: () => ipcRenderer.invoke('log:all'),
+    clear: () => ipcRenderer.send('log:clear'),
+    openFolder: () => ipcRenderer.invoke('log:openFolder'),
+    openConsole: () => ipcRenderer.send('log:openConsole'),
+    onLine: on('log:line'),
   },
   ssh: {
     connect: serverId => ipcRenderer.invoke('ssh:connect', serverId),

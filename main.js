@@ -8,6 +8,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const zlib = require('node:zlib');
 const { StringDecoder } = require('node:string_decoder');
+const util = require('node:util');
 const { METRICS_CMD, parseMetrics, TOP_CMD, parseTop } = require('./metrics');
 const { killCmd, DROP_CACHES_CMD, SCAN_CMD, parseScan, cleanCmd } = require('./maint');
 const winlogs = require('./winlogs');
@@ -46,6 +47,44 @@ function createWindow() {
   win.loadFile('index.html');
 }
 
+// ---------- app log: Debug Console + optional log file ----------
+// Everything main prints (console.*, IPC handler errors, Node warnings) goes to an in-memory ring buffer
+// shown in Help → Debug Console. With Settings → "Save log to a file" on (default off) it is also appended
+// to <folder>/eranterm.log. ponytail: one file, rotated once to eranterm.log.1 at 10 MB on startup/enable.
+const LOG_MAX = 3000;
+const logBuf = [];
+let logWin, logFile = '';
+const logFileIn = dir => path.join(dir, 'eranterm.log');
+function setLogFile(dir) {
+  fs.mkdirSync(dir, { recursive: true }); // throws before logFile is set, so a bad folder never half-enables
+  const f = logFileIn(dir);
+  try { if (fs.statSync(f).size > 10 * 1024 * 1024) fs.renameSync(f, f + '.1'); } catch { /* no file yet */ }
+  logFile = f;
+}
+function logLine(level, args) {
+  const text = args.map(a => (a instanceof Error ? a.stack || a.message : typeof a === 'string' ? a : util.inspect(a, { depth: 3 }))).join(' ');
+  const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(5)} ${text}`;
+  logBuf.push(line);
+  if (logBuf.length > LOG_MAX) logBuf.shift();
+  if (logWin && !logWin.isDestroyed()) logWin.webContents.send('log:line', line);
+  if (logFile) fs.appendFile(logFile, line + '\n', () => {}); // a failed write must never break the app
+}
+for (const level of ['log', 'info', 'warn', 'error']) {
+  const orig = console[level].bind(console);
+  console[level] = (...a) => { orig(...a); logLine(level === 'log' ? 'info' : level, a); };
+}
+process.on('warning', w => logLine('warn', [w.message]));
+ipcMain.handle('log:all', () => logBuf);
+ipcMain.on('log:clear', () => { logBuf.length = 0; });
+ipcMain.on('log:openConsole', () => openDebugConsole());
+function openDebugConsole() {
+  if (logWin && !logWin.isDestroyed()) return logWin.focus();
+  logWin = new BrowserWindow({ width: 1000, height: 600, title: 'EranTerm Debug Console', backgroundColor: '#0b0d10',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false } });
+  logWin.setMenuBarVisibility(false);
+  logWin.loadFile('debug.html');
+}
+
 // ---------- menu / help ----------
 let manualWin;
 function openManual() {
@@ -68,6 +107,7 @@ function buildMenu() {
     { role: 'help', submenu: [
       { label: `Version ${app.getVersion()}`, click: showVersion },
       { label: 'User Manual', accelerator: 'F1', click: openManual },
+      { label: 'Debug Console', accelerator: 'CmdOrCtrl+Shift+L', click: openDebugConsole },
       { type: 'separator' },
       { label: 'Check for Updates…', click: () => checkUpdates(true) },
     ] },
@@ -238,9 +278,29 @@ ipcMain.handle('settings:setAutoUpdate', (_e, on) => {
   writeJson('settings.json', { ...readJson('settings.json', {}), autoUpdate: !!on });
   if (on) checkUpdates();
 });
+// Log to file: { logToFile, logDir }. Default off; folder defaults to the OS log folder.
+const logSettings = () => {
+  const st = readJson('settings.json', {});
+  return { logToFile: !!st.logToFile, logDir: st.logDir || app.getPath('logs') };
+};
+ipcMain.handle('settings:setLog', (_e, { logToFile, logDir }) => {
+  logDir = String(logDir || '').trim() || app.getPath('logs');
+  if (!path.isAbsolute(logDir)) throw new Error('Log folder must be a full path.');
+  if (logToFile) setLogFile(logDir); // creates the folder; throws (shown in Settings) if it can't
+  else logFile = '';
+  writeJson('settings.json', { ...readJson('settings.json', {}), logToFile: !!logToFile, logDir });
+  console.info(logToFile ? `Logging to ${logFileIn(logDir)}` : 'Logging to file turned off');
+});
+ipcMain.handle('settings:pickLogDir', async (_e, cur) => {
+  const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(_e.sender), {
+    title: 'Folder for eranterm.log', defaultPath: cur, properties: ['openDirectory', 'createDirectory'] });
+  return r.canceled ? null : r.filePaths[0];
+});
+ipcMain.handle('log:openFolder', () => shell.openPath(logSettings().logDir));
 ipcMain.handle('settings:get', () => ({
   version: app.getVersion(),
   autoUpdate: autoUpdateOn(),
+  ...logSettings(),
   aiProvider: aiProvider(),
   providers: Object.fromEntries(Object.entries(AI_PROVIDERS).map(([id, d]) => [id, {
     label: d.label, models: d.models, env: d.env, model: aiConf(id).model,
@@ -314,7 +374,10 @@ const openConn = serverId => new Promise((resolve, reject) => {
   if (s.passwordEnc) cfg.password = dec(s.passwordEnc);
   if (!s.keyPath && !s.passwordEnc && process.env.SSH_AUTH_SOCK) cfg.agent = process.env.SSH_AUTH_SOCK;
 
+  const who = `${s.name || s.host} (${cfg.username}@${s.host}:${cfg.port})`;
+  console.info(`SSH connecting to ${who} using ${cfg.privateKey ? 'key' : cfg.password ? 'password' : cfg.agent ? 'agent' : 'no credentials'}`);
   conn.on('ready', () => {
+    console.info(`SSH connected to ${who}`);
     const c = { conn, serverId, uname: '', sftp: null, err: null };
     conns.set(connId, c);
     patchServer(serverId, { lastSeen: Date.now() });
@@ -332,12 +395,13 @@ const openConn = serverId => new Promise((resolve, reject) => {
     resolve(connId);
   });
   conn.on('error', err => {
+    console.error(`SSH error for ${who}: ${err.message}`);
     if (conns.has(connId)) conns.get(connId).err = err.message;
     else reject(err);
   });
   conn.on('close', () => {
     const c = conns.get(connId);
-    if (c && conns.delete(connId)) send('ssh:connClosed', connId, c.err);
+    if (c && conns.delete(connId)) { console.info(`SSH closed ${who}`); send('ssh:connClosed', connId, c.err); }
   });
   conn.connect(cfg);
 });
@@ -902,6 +966,9 @@ ipcMain.handle('ai:suggest', async (_e, connId, request) => {
 });
 
 app.whenReady().then(() => {
+  const ls = logSettings();
+  if (ls.logToFile) try { setLogFile(ls.logDir); } catch (e) { console.error(`Log file disabled: ${e.message}`); }
+  console.info(`EranTerm ${app.getVersion()} started (${process.platform} ${process.arch}, Electron ${process.versions.electron})`);
   buildMenu();
   createWindow();
   if (autoUpdateOn()) setTimeout(checkUpdates, 10e3); // after startup settles

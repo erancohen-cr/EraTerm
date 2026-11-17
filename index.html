@@ -407,6 +407,17 @@
       <h4 class="dlgsec">Updates</h4>
       <label class="row"><input name="autoUpdate" type="checkbox"> Update automatically when a new release is published</label>
       <p class="hint" id="updHint"></p>
+      <h4 class="dlgsec">Logging</h4>
+      <label class="row"><input name="logToFile" type="checkbox"> Save the app log to a file (eranterm.log)</label>
+      <label>Log folder
+        <span class="modelrow">
+          <input name="logDir" spellcheck="false" autocomplete="off">
+          <button type="button" id="logPick">Choose…</button>
+          <button type="button" id="logOpen" title="Open the log folder">Open</button>
+        </span>
+      </label>
+      <button type="button" id="logConsole">Open Debug Console</button>
+      <p class="hint">Connections, errors and update checks. Passwords and keys are never logged. Live view: Help → Debug Console (Ctrl/⌘ + Shift + L).</p>
       <h4 class="dlgsec">AI configuration</h4>
       <label>Provider <select name="aiProvider"></select></label>
       <p id="keyStatus" class="hint"></p>
