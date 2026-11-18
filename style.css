@@ -539,3 +539,6 @@ tr.srow.alerting td:first-child { box-shadow: inset 3px 0 var(--error); }
 @keyframes xpop { 50% { transform: scale(1.15); } }
 @keyframes xin { from { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) { .xfer *, .xfer { animation: none !important; } }
+/* file-row actions: same box for every button; text glyphs enlarged to match the 🗑 emoji */
+.grid .actions button.icon { width: 30px; height: 28px; padding: 0; line-height: 1; vertical-align: middle; }
+.grid .actions button.icon:not(.danger) { font-size: 17px; }
